@@ -64,6 +64,24 @@ static const avr_uart_config_t uart_config = {
     .txc_vec  = 20,   /* USART_TX_vect */
 };
 
+/* ---------- TWI (I2C) config ---------- */
+/* TWBR  = mem 0xB8 → index 0x98
+ * TWSR  = mem 0xB9 → index 0x99
+ * TWAR  = mem 0xBA → index 0x9A
+ * TWDR  = mem 0xBB → index 0x9B
+ * TWCR  = mem 0xBC → index 0x9C
+ * TWAMR = mem 0xBD → index 0x9D
+ */
+static const avr_twi_config_t twi_config = {
+    .twbr_io  = 0x98,
+    .twsr_io  = 0x99,
+    .twar_io  = 0x9A,
+    .twdr_io  = 0x9B,
+    .twcr_io  = 0x9C,
+    .twamr_io = 0x9D,
+    .twi_vec  = 24,     /* TWI_vect (vector 25, 0-indexed = 24) */
+};
+
 /* ---------- ADC stub ---------- */
 /* ADCSRA = mem 0x7A → index 0x5A
  * ADCSRB = mem 0x7B → index 0x5B
@@ -103,6 +121,7 @@ static void atmega328p_periph_init(avr_cpu_t *cpu)
     cpu->periph_timer = avr_timer0_init(cpu, &timer0_config);
     cpu->periph_gpio  = avr_gpio_init(cpu, gpio_ports, 3);
     cpu->periph_uart  = avr_uart_init(cpu, &uart_config);
+    cpu->periph_twi   = avr_twi_init(cpu, &twi_config);
 
     /* ADC stub: immediate conversion complete */
     avr_io_register(cpu, ADC_ADCSRA_IO, NULL, adc_write, NULL);

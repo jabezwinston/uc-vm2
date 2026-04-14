@@ -14,6 +14,7 @@ if(CONFIG_UCVM_ENABLE_AVR)
         "${UCVM_SRC_DIR}/avr/avr_timer.c"
         "${UCVM_SRC_DIR}/avr/avr_gpio.c"
         "${UCVM_SRC_DIR}/avr/avr_uart.c"
+        "${UCVM_SRC_DIR}/avr/avr_twi.c"
         "${UCVM_SRC_DIR}/avr/atmega328p.c"
         "${UCVM_SRC_DIR}/avr/attiny85.c"
         "${UCVM_SRC_DIR}/gdb/gdb_target_avr.c"

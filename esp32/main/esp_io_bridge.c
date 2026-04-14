@@ -18,6 +18,7 @@
 
 #include "driver/gpio.h"
 #include "driver/uart.h"
+#include "driver/i2c_master.h"
 #include "esp_adc/adc_oneshot.h"
 #include "esp_log.h"
 
@@ -65,6 +66,24 @@ typedef struct {
 static adc_bridge_t adc_bridges[MAX_ADC_BRIDGES];
 static int adc_bridge_count = 0;
 static adc_oneshot_unit_handle_t adc_handle = NULL;
+
+/* ---------- I2C bridge state ---------- */
+
+static i2c_master_bus_handle_t i2c_bus_handle = NULL;
+static i2c_master_dev_handle_t i2c_dev_handle = NULL;
+static uint8_t  i2c_active = 0;
+static uint8_t  i2c_sda_pin = 21;  /* Default ESP32 I2C SDA */
+static uint8_t  i2c_scl_pin = 22;  /* Default ESP32 I2C SCL */
+
+/* I2C transaction buffer for bus-level operations */
+#define I2C_BUF_SIZE 128
+static uint8_t  i2c_tx_buf[I2C_BUF_SIZE];
+static int      i2c_tx_len = 0;
+static uint8_t  i2c_rx_buf[I2C_BUF_SIZE];
+static int      i2c_rx_len = 0;
+static int      i2c_rx_pos = 0;
+static uint8_t  i2c_slave_addr = 0;
+static int      i2c_is_read = 0;
 
 /* ================================================================
  *  Architecture dispatch helpers — ext_pins access
@@ -268,6 +287,175 @@ static void setup_adc_bridge(const io_bridge_entry_t *entry)
 }
 
 /* ================================================================
+ *  I2C bridge — implements avr_twi_bus_t via ESP32 I2C master
+ * ================================================================ */
+
+#ifdef CONFIG_UCVM_ENABLE_AVR
+
+/* I2C bus ops called by the AVR TWI peripheral */
+
+static int esp_i2c_start(void *ctx)
+{
+    (void)ctx;
+    /* Reset transaction buffers */
+    i2c_tx_len = 0;
+    i2c_rx_len = 0;
+    i2c_rx_pos = 0;
+    i2c_slave_addr = 0;
+    i2c_is_read = 0;
+    return 0;
+}
+
+static int esp_i2c_write(void *ctx, uint8_t byte)
+{
+    (void)ctx;
+
+    if (i2c_slave_addr == 0) {
+        /* First byte after START = SLA+R/W */
+        i2c_slave_addr = byte >> 1;
+        i2c_is_read = byte & 1;
+
+        if (i2c_is_read) {
+            /* SLA+R: do the read transaction now.
+             * We need to know how many bytes to request, but TWI does it
+             * one byte at a time. We'll read one byte per read_byte call.
+             * First, add the device if needed. */
+            if (i2c_dev_handle) {
+                i2c_master_bus_rm_device(i2c_dev_handle);
+                i2c_dev_handle = NULL;
+            }
+            i2c_device_config_t dev_cfg = {
+                .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+                .device_address = i2c_slave_addr,
+                .scl_speed_hz = 100000,
+            };
+            if (i2c_master_bus_add_device(i2c_bus_handle, &dev_cfg, &i2c_dev_handle) != ESP_OK) {
+                ESP_LOGE(TAG, "I2C add device 0x%02X failed", i2c_slave_addr);
+                return 0; /* NACK */
+            }
+            /* If we had prior TX data (register address), send it first as write phase */
+            if (i2c_tx_len > 0) {
+                /* Write-then-read: send TX buffer first, then read */
+                esp_err_t err = i2c_master_transmit_receive(i2c_dev_handle,
+                    i2c_tx_buf, i2c_tx_len,
+                    i2c_rx_buf, I2C_BUF_SIZE, 100);
+                if (err != ESP_OK) {
+                    ESP_LOGW(TAG, "I2C transmit_receive failed: %s", esp_err_to_name(err));
+                    i2c_rx_len = 0;
+                    return 0;
+                }
+                i2c_rx_len = I2C_BUF_SIZE; /* Will be consumed by read_byte */
+                i2c_rx_pos = 0;
+                i2c_tx_len = 0;
+            }
+            return 1; /* ACK */
+        } else {
+            /* SLA+W: add device */
+            if (i2c_dev_handle) {
+                i2c_master_bus_rm_device(i2c_dev_handle);
+                i2c_dev_handle = NULL;
+            }
+            i2c_device_config_t dev_cfg = {
+                .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+                .device_address = i2c_slave_addr,
+                .scl_speed_hz = 100000,
+            };
+            if (i2c_master_bus_add_device(i2c_bus_handle, &dev_cfg, &i2c_dev_handle) != ESP_OK) {
+                ESP_LOGE(TAG, "I2C add device 0x%02X failed", i2c_slave_addr);
+                return 0;
+            }
+            return 1; /* ACK */
+        }
+    }
+
+    /* Subsequent write bytes: buffer them */
+    if (i2c_tx_len < I2C_BUF_SIZE) {
+        i2c_tx_buf[i2c_tx_len++] = byte;
+        return 1; /* ACK */
+    }
+    return 0; /* NACK — buffer full */
+}
+
+static int esp_i2c_read(void *ctx, int ack)
+{
+    (void)ctx; (void)ack;
+
+    if (i2c_rx_pos < i2c_rx_len)
+        return i2c_rx_buf[i2c_rx_pos++];
+
+    /* Try to read one byte directly */
+    if (i2c_dev_handle) {
+        uint8_t byte;
+        esp_err_t err = i2c_master_receive(i2c_dev_handle, &byte, 1, 100);
+        if (err == ESP_OK)
+            return byte;
+    }
+    return 0xFF;
+}
+
+static void esp_i2c_stop(void *ctx)
+{
+    (void)ctx;
+
+    /* If we have buffered TX data that hasn't been sent, send now */
+    if (!i2c_is_read && i2c_tx_len > 0 && i2c_dev_handle) {
+        esp_err_t err = i2c_master_transmit(i2c_dev_handle, i2c_tx_buf, i2c_tx_len, 100);
+        if (err != ESP_OK)
+            ESP_LOGW(TAG, "I2C transmit failed: %s", esp_err_to_name(err));
+        i2c_tx_len = 0;
+    }
+}
+
+static avr_twi_bus_t esp_i2c_bus = {
+    .start      = esp_i2c_start,
+    .write_byte = esp_i2c_write,
+    .read_byte  = esp_i2c_read,
+    .stop       = esp_i2c_stop,
+    .ctx        = NULL,
+};
+
+static void setup_i2c_bridge(const io_bridge_entry_t *entry)
+{
+    if (i2c_active) {
+        ESP_LOGW(TAG, "I2C bridge already active");
+        return;
+    }
+
+    /* entry->avr_resource: unused (MCU has one TWI)
+     * entry->host_resource: ESP32 I2C port (0 or 1)
+     * entry->flags bits 7:4 = SDA pin override, bits 3:0 = SCL pin override
+     * For simplicity, use default pins unless specified */
+
+    ESP_LOGI(TAG, "I2C: MCU TWI <-> ESP32 I2C (SDA=%d, SCL=%d)",
+             i2c_sda_pin, i2c_scl_pin);
+
+    i2c_master_bus_config_t bus_cfg = {
+        .clk_source = I2C_CLK_SRC_DEFAULT,
+        .i2c_port = (i2c_port_num_t)entry->host_resource,
+        .sda_io_num = i2c_sda_pin,
+        .scl_io_num = i2c_scl_pin,
+        .glitch_ignore_cnt = 7,
+        .flags.enable_internal_pullup = true,
+    };
+
+    if (i2c_new_master_bus(&bus_cfg, &i2c_bus_handle) != ESP_OK) {
+        ESP_LOGE(TAG, "I2C master bus init failed");
+        return;
+    }
+
+    i2c_active = 1;
+
+    /* Attach bus to the AVR TWI peripheral */
+    if (bridge_arch == ESP_BRIDGE_ARCH_AVR) {
+        avr_cpu_t *cpu = bridge_cpu;
+        if (cpu->periph_twi)
+            avr_twi_set_bus(cpu->periph_twi, &esp_i2c_bus);
+    }
+}
+
+#endif /* CONFIG_UCVM_ENABLE_AVR */
+
+/* ================================================================
  *  Public API
  * ================================================================ */
 
@@ -304,6 +492,9 @@ void esp_bridge_init(void *cpu, int arch, const io_bridge_config_t *config)
         case IO_BRIDGE_GPIO: setup_gpio_bridge(entry); break;
         case IO_BRIDGE_UART: setup_uart_bridge(entry); break;
         case IO_BRIDGE_ADC:  setup_adc_bridge(entry);  break;
+#ifdef CONFIG_UCVM_ENABLE_AVR
+        case IO_BRIDGE_I2C:  setup_i2c_bridge(entry);  break;
+#endif
         default: ESP_LOGW(TAG, "Unknown bridge type %d", entry->type); break;
         }
     }
@@ -332,6 +523,17 @@ void esp_bridge_deinit(void)
         adc_handle = NULL;
     }
     adc_bridge_count = 0;
+
+    /* I2C cleanup */
+    if (i2c_dev_handle) {
+        i2c_master_bus_rm_device(i2c_dev_handle);
+        i2c_dev_handle = NULL;
+    }
+    if (i2c_bus_handle) {
+        i2c_del_master_bus(i2c_bus_handle);
+        i2c_bus_handle = NULL;
+    }
+    i2c_active = 0;
 
     gpio_uninstall_isr_service();
     bridge_cpu  = NULL;

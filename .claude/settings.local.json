@@ -120,7 +120,14 @@
       "Bash(timeout 3 ./ucvm -a 8051 -q examples/mcs51/uart_hello/main.ihx)",
       "Bash(timeout 2 ./ucvm -a 8051 examples/mcs51/blink/main.ihx)",
       "Bash(./ucvm:*)",
-      "Bash(ls examples/*/Makefile)"
+      "Bash(ls examples/*/Makefile)",
+      "WebSearch",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:onlinedocs.microchip.com)",
+      "WebFetch(domain:ww1.microchip.com)",
+      "WebFetch(domain:github.com)",
+      "Bash(arduino-cli board:*)",
+      "Bash(arduino-cli compile:*)"
     ]
   }
 }

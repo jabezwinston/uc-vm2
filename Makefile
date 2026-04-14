@@ -20,6 +20,8 @@ AVR_SRCS = src/avr/avr_cpu.c \
            src/avr/avr_timer.c \
            src/avr/avr_gpio.c \
            src/avr/avr_uart.c \
+           src/avr/avr_twi.c \
+           src/avr/avr_twi_slave.c \
            src/avr/atmega328p.c \
            src/avr/attiny85.c
 

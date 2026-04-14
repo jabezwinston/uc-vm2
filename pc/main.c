@@ -176,6 +176,13 @@ static int run_avr(const char *variant_name, const char *hex_file,
     cpu->bridge_cb = pc_bridge_callback;
     cpu->bridge_ctx = NULL;
 
+    /* Attach virtual I2C slave at address 0x50 (like an EEPROM) for testing */
+    if (cpu->periph_twi) {
+        avr_twi_bus_t *i2c_bus = avr_twi_create_virtual_slave(0x50, !quiet);
+        avr_twi_set_bus(cpu->periph_twi, i2c_bus);
+        fprintf(stderr, "ucvm: virtual I2C slave at 0x50\n");
+    }
+
     /* Signal handler + stdin */
     signal(SIGINT, sigint_handler);
     setup_stdin_nonblock();

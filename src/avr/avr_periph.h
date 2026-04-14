@@ -116,4 +116,78 @@ void avr_uart_rx_push(avr_cpu_t *cpu, avr_uart_t *uart, uint8_t byte);
  * Returns -1 if empty. */
 int avr_uart_tx_pop(avr_uart_t *uart);
 
+/* ========== TWI (I2C) ========== */
+
+/* I2C bus operations — called by TWI peripheral during emulated bus transactions.
+ * Attach a bus to forward transactions to real hardware (ESP32) or virtual slaves (PC). */
+typedef struct avr_twi_bus {
+    int  (*start)(void *ctx);                        /* Bus START. Returns 0=ok. */
+    int  (*write_byte)(void *ctx, uint8_t byte);     /* TX byte. Returns 1=ACK, 0=NACK. */
+    int  (*read_byte)(void *ctx, int send_ack);      /* RX byte. Returns 0-255, or -1. */
+    void (*stop)(void *ctx);                         /* Bus STOP. */
+    void *ctx;
+} avr_twi_bus_t;
+
+/* TWI register config (variant-specific I/O indices = data_addr - 0x20) */
+typedef struct {
+    uint8_t twbr_io;    /* TWBR  */
+    uint8_t twsr_io;    /* TWSR  */
+    uint8_t twar_io;    /* TWAR  */
+    uint8_t twdr_io;    /* TWDR  */
+    uint8_t twcr_io;    /* TWCR  */
+    uint8_t twamr_io;   /* TWAMR */
+    uint8_t twi_vec;    /* TWI interrupt vector number */
+} avr_twi_config_t;
+
+/* TWI bus states */
+enum {
+    TWI_IDLE = 0,
+    TWI_START_SENT,         /* START completed, waiting for SLA+R/W in TWDR */
+    TWI_MT_ADDR_SENT,       /* SLA+W sent, ACK/NACK received */
+    TWI_MT_DATA_SENT,       /* Data byte sent in MT mode */
+    TWI_MR_ADDR_SENT,       /* SLA+R sent, ACK/NACK received */
+    TWI_MR_DATA_RECEIVED,   /* Data byte received in MR mode */
+};
+
+/* TWI peripheral state */
+typedef struct {
+    const avr_twi_config_t *config;
+    avr_twi_bus_t *bus;         /* Attached I2C bus (NULL = no device, NACK everything) */
+
+    uint8_t  bus_state;         /* TWI_IDLE, TWI_START_SENT, etc. */
+    uint8_t  status;            /* Current TWSR status code (top 5 bits) */
+    uint8_t  slave_rw;          /* 0=write, 1=read (from SLA+R/W) */
+
+    /* Cycle-accurate timing */
+    uint32_t cycles_remaining;  /* CPU cycles until current operation completes */
+    uint8_t  pending_op;        /* Operation in progress (0=none) */
+    uint8_t  pending_data;      /* Data byte for pending operation */
+    uint8_t  pending_ack;       /* ACK flag for pending read */
+} avr_twi_t;
+
+/* Pending operation codes */
+enum {
+    TWI_OP_NONE = 0,
+    TWI_OP_START,
+    TWI_OP_SLA_W,
+    TWI_OP_SLA_R,
+    TWI_OP_DATA_TX,
+    TWI_OP_DATA_RX,
+    TWI_OP_STOP,
+};
+
+/* Init TWI — registers I/O handlers on cpu. Returns state stored in cpu->periph_twi. */
+avr_twi_t *avr_twi_init(avr_cpu_t *cpu, const avr_twi_config_t *config);
+
+/* Tick TWI by elapsed CPU cycles — call from cpu_step */
+void avr_twi_tick(avr_cpu_t *cpu, avr_twi_t *twi, uint8_t cycles);
+
+/* Attach/detach an I2C bus (for ESP32 bridge or virtual slave) */
+void avr_twi_set_bus(avr_twi_t *twi, avr_twi_bus_t *bus);
+
+/* Create a virtual I2C slave at given 7-bit address (for PC testing).
+ * Returns a bus handle to pass to avr_twi_set_bus(). */
+avr_twi_bus_t *avr_twi_create_virtual_slave(uint8_t addr, int verbose);
+uint8_t *avr_twi_virtual_slave_regs(void);
+
 #endif /* AVR_PERIPH_H */

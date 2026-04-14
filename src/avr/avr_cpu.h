@@ -96,6 +96,7 @@ struct avr_cpu {
     void *periph_timer;
     void *periph_gpio;
     void *periph_uart;
+    void *periph_twi;
 
     /* I/O bridge callback */
     io_bridge_cb_t bridge_cb;

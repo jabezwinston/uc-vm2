@@ -276,6 +276,8 @@ uint8_t avr_cpu_step(avr_cpu_t *cpu)
     /* Tick peripherals */
     if (cpu->periph_timer)
         avr_timer0_tick(cpu, cpu->periph_timer, cycles);
+    if (cpu->periph_twi)
+        avr_twi_tick(cpu, cpu->periph_twi, cycles);
 
     /* Check for pending interrupts */
     avr_cpu_check_irq(cpu);
