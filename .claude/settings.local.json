@@ -77,7 +77,9 @@
       "Bash(timeout 3 ./ucvm examples/uart_hello/uart_hello.hex)",
       "Bash(timeout 2 /home/jw1/Git_repos/ucvm/ucvm -q /home/jw1/Git_repos/ucvm/examples/arduino/DigitalReadSerial/build/DigitalReadSerial.ino.hex)",
       "Bash(timeout 2 /home/jw1/Git_repos/ucvm/ucvm -q /home/jw1/Git_repos/ucvm/examples/arduino/ASCIITable/build/ASCIITable.ino.hex)",
-      "Bash(timeout 2 /home/jw1/Git_repos/ucvm/ucvm -q /home/jw1/Git_repos/ucvm/examples/arduino/AnalogReadSerial/build/AnalogReadSerial.ino.hex)"
+      "Bash(timeout 2 /home/jw1/Git_repos/ucvm/ucvm -q /home/jw1/Git_repos/ucvm/examples/arduino/AnalogReadSerial/build/AnalogReadSerial.ino.hex)",
+      "Bash(avr-gdb:*)",
+      "Bash(curl:*)"
     ]
   }
 }

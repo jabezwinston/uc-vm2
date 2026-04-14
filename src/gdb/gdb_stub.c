@@ -29,10 +29,11 @@ struct gdb_state {
     int listen_fd;
     int client_fd;
 
-    /* State */
-    int is_running;    /* 1 = emulation running, 0 = stopped */
-    int single_step;
-    int should_quit;
+    /* State — volatile for cross-core visibility (ESP32 dual-core) */
+    volatile int is_running;    /* 1 = emulation running, 0 = stopped */
+    volatile int single_step;
+    volatile int should_quit;
+    volatile uint16_t resume_from_pc; /* PC where we resumed — skip BP once at this addr */
 
     /* Breakpoints */
     uint16_t breakpoints[GDB_MAX_BREAKPOINTS];
@@ -285,13 +286,14 @@ static void handle_packet(gdb_state_t *gdb, const char *pkt, int len)
         handle_write_memory(gdb, pkt + 1);
         break;
     case 'c':
-        /* Continue */
+        /* Continue — record resume PC so gdb_check_breakpoint skips it once */
         if (len > 1) {
             int hlen;
             uint32_t addr = parse_hex(pkt + 1, &hlen);
             gdb->cpu->pc = addr / 2;
         }
         gdb->single_step = 0;
+        gdb->resume_from_pc = gdb->cpu->pc;
         gdb->is_running = 1;
         gdb->cpu->state = AVR_STATE_RUNNING;
         break;
@@ -313,13 +315,21 @@ static void handle_packet(gdb_state_t *gdb, const char *pkt, int len)
         handle_clear_breakpoint(gdb, pkt + 1);
         break;
     case 'D':
-        /* Detach */
+        /* Detach — close client, resume emulation, allow reconnect */
         send_ok(gdb);
-        gdb->should_quit = 1;
+        close(gdb->client_fd);
+        gdb->client_fd = -1;
+        gdb->is_running = 1;
+        gdb->single_step = 0;
+        gdb->bp_count = 0;
         break;
     case 'k':
-        /* Kill */
-        gdb->should_quit = 1;
+        /* Kill — same as detach for embedded targets */
+        close(gdb->client_fd);
+        gdb->client_fd = -1;
+        gdb->is_running = 1;
+        gdb->single_step = 0;
+        gdb->bp_count = 0;
         break;
     case 'q':
         if (strncmp(pkt, "qSupported", 10) == 0) {
@@ -361,6 +371,7 @@ gdb_state_t *gdb_init(avr_cpu_t *cpu, const uint16_t *flash,
     gdb->flash_words = flash_words;
     gdb->client_fd = -1;
     gdb->is_running = 0;
+    gdb->resume_from_pc = 0xFFFF;
 
     /* Create TCP listener */
     gdb->listen_fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -390,34 +401,71 @@ gdb_state_t *gdb_init(avr_cpu_t *cpu, const uint16_t *flash,
         return NULL;
     }
 
+    /* Set listen socket non-blocking for poll-based accept */
+    int flags = fcntl(gdb->listen_fd, F_GETFL, 0);
+    fcntl(gdb->listen_fd, F_SETFL, flags | O_NONBLOCK);
+
     return gdb;
 }
 
 void gdb_wait_connect(gdb_state_t *gdb)
 {
+    /* Make listen socket blocking for this call */
+    int flags = fcntl(gdb->listen_fd, F_GETFL, 0);
+    fcntl(gdb->listen_fd, F_SETFL, flags & ~O_NONBLOCK);
+
     struct sockaddr_in client_addr;
     socklen_t client_len = sizeof(client_addr);
     gdb->client_fd = accept(gdb->listen_fd,
                              (struct sockaddr *)&client_addr, &client_len);
+
+    /* Restore non-blocking on listen socket */
+    fcntl(gdb->listen_fd, F_SETFL, flags | O_NONBLOCK);
+
     if (gdb->client_fd >= 0) {
-        /* Set non-blocking */
-        int flags = fcntl(gdb->client_fd, F_GETFL, 0);
-        fcntl(gdb->client_fd, F_SETFL, flags | O_NONBLOCK);
+        /* Set client non-blocking */
+        int cflags = fcntl(gdb->client_fd, F_GETFL, 0);
+        fcntl(gdb->client_fd, F_SETFL, cflags | O_NONBLOCK);
     }
 }
 
 void gdb_poll(gdb_state_t *gdb)
 {
+    /* If no client, try non-blocking accept */
+    if (gdb->client_fd < 0 && gdb->listen_fd >= 0) {
+        struct sockaddr_in client_addr;
+        socklen_t client_len = sizeof(client_addr);
+        int fd = accept(gdb->listen_fd,
+                        (struct sockaddr *)&client_addr, &client_len);
+        if (fd >= 0) {
+            int cflags = fcntl(fd, F_GETFL, 0);
+            fcntl(fd, F_SETFL, cflags | O_NONBLOCK);
+            /* Stop emulation first to avoid racing with emu task */
+            gdb->is_running = 0;
+            gdb->cpu->state = AVR_STATE_HALTED;
+            gdb->client_fd = fd;
+            gdb->should_quit = 0;
+            gdb->single_step = 0;
+            gdb->resume_from_pc = 0xFFFF;
+            gdb->bp_count = 0;
+            /* Reset CPU — safe now since emu task sees HALTED state */
+            avr_cpu_reset(gdb->cpu);
+        }
+        return; /* Nothing more to do this cycle */
+    }
+
     if (gdb->client_fd < 0) return;
 
     char tmp[256];
     ssize_t n = read(gdb->client_fd, tmp, sizeof(tmp));
     if (n <= 0) {
         if (n == 0 || (errno != EAGAIN && errno != EWOULDBLOCK)) {
-            /* Client disconnected */
+            /* Client disconnected — close client but keep listening */
             close(gdb->client_fd);
             gdb->client_fd = -1;
-            gdb->should_quit = 1;
+            gdb->is_running = 1; /* Resume emulation when GDB disconnects */
+            gdb->single_step = 0;
+            /* Don't set should_quit — allow reconnection via poll */
         }
         return;
     }
@@ -475,6 +523,13 @@ int gdb_is_single_stepping(gdb_state_t *gdb)
 
 int gdb_check_breakpoint(gdb_state_t *gdb, uint16_t pc)
 {
+    /* After continue, skip BP at the resume PC so we don't re-trigger
+     * the breakpoint we just resumed from. Consumed once PC moves. */
+    if (gdb->resume_from_pc != 0xFFFF) {
+        if (pc == gdb->resume_from_pc)
+            return 0; /* still at resume point — skip */
+        gdb->resume_from_pc = 0xFFFF; /* PC moved — re-enable BP checking */
+    }
     for (int i = 0; i < gdb->bp_count; i++) {
         if (gdb->breakpoints[i] == pc)
             return 1;

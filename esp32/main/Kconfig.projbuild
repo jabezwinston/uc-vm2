@@ -12,4 +12,19 @@ menu "ucvm Configuration"
         help
             Password for the WiFi network.
 
+    config UCVM_GDB_ENABLE
+        bool "Enable GDB stub over WiFi"
+        default y
+        help
+            Enable the GDB RSP stub over TCP. Allows avr-gdb to
+            connect via WiFi for remote debugging of the emulated AVR.
+
+    config UCVM_GDB_PORT
+        int "GDB TCP port"
+        depends on UCVM_GDB_ENABLE
+        default 1234
+        range 1024 65535
+        help
+            TCP port for the GDB remote serial protocol stub.
+
 endmenu

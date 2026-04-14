@@ -74,7 +74,7 @@ struct avr_cpu {
     uint8_t  sreg;           /* Status register (kept separate for speed) */
     uint16_t sp;             /* Stack pointer */
     uint64_t cycles;         /* Total cycles executed */
-    uint8_t  state;          /* AVR_STATE_* */
+    volatile uint8_t state;  /* AVR_STATE_* — volatile for cross-core access */
     uint8_t  skip_next;      /* 1 = skip next instruction (CPSE/SBRC/SBRS/SBIC/SBIS) */
 
     /* Program memory (word-addressed, not copied to RAM on ESP32) */

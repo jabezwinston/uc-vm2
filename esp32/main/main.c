@@ -3,7 +3,7 @@
  *
  * Dual-core operation:
  *   Core 1: AVR emulation loop (high priority, tight loop)
- *   Core 0: I/O bridge polling, web server, WiFi
+ *   Core 0: I/O bridge polling, web server, GDB stub, WiFi
  *
  * Boot sequence:
  *   1. Init NVS, SPIFFS
@@ -13,8 +13,9 @@
  *   5. Init CPU + peripherals
  *   6. Init I/O bridge backends (GPIO/UART/ADC)
  *   7. Start web server
- *   8. Pin emulation task to core 1
- *   9. Core 0: poll I/O bridge + serve HTTP
+ *   8. Start GDB stub (if enabled)
+ *   9. Pin emulation task to core 1
+ *  10. Core 0: poll I/O bridge + GDB
  */
 #include <stdio.h>
 #include <string.h>
@@ -29,6 +30,7 @@
 #include "src/periph/avr_periph.h"
 #include "src/util/ihex.h"
 #include "src/io/io_bridge.h"
+#include "src/gdb/gdb_stub.h"
 
 #include "esp_io_bridge.h"
 #include "esp_wifi_setup.h"
@@ -43,10 +45,23 @@ static uint16_t flash_buf[MAX_FLASH_WORDS];
 /* I/O bridge config (runtime, modifiable via web) */
 static io_bridge_config_t bridge_config;
 
+/* GDB state (NULL if disabled) */
+static gdb_state_t *g_gdb = NULL;
+
 /* NVS namespace */
 #define NVS_NAMESPACE "ucvm"
 #define NVS_KEY_BRIDGE "bridge"
 #define NVS_KEY_VARIANT "variant"
+
+/* GDB config from Kconfig */
+#ifdef CONFIG_UCVM_GDB_ENABLE
+#define GDB_ENABLED 1
+#ifndef CONFIG_UCVM_GDB_PORT
+#define CONFIG_UCVM_GDB_PORT 1234
+#endif
+#else
+#define GDB_ENABLED 0
+#endif
 
 /* ---------- NVS Config Storage ---------- */
 
@@ -174,24 +189,49 @@ static void emu_task(void *arg)
     ESP_LOGI(TAG, "Emulation started on core %d", xPortGetCoreID());
 
     while (1) {
+        /* If GDB is active and not running, wait */
+        if (g_gdb && !gdb_is_running(g_gdb)) {
+            vTaskDelay(pdMS_TO_TICKS(10));
+            continue;
+        }
+
         if (cpu->state == AVR_STATE_RUNNING) {
             /* Run a batch of instructions before yielding */
             for (int i = 0; i < 1000; i++) {
                 if (cpu->state != AVR_STATE_RUNNING)
                     break;
+
+                /* GDB breakpoint check */
+                if (g_gdb && gdb_check_breakpoint(g_gdb, cpu->pc)) {
+                    gdb_notify_stop(g_gdb, AVR_STATE_BREAK);
+                    break;
+                }
+
                 avr_cpu_step(cpu);
+
+                /* GDB single-step check */
+                if (g_gdb && gdb_is_single_stepping(g_gdb)) {
+                    gdb_notify_stop(g_gdb, AVR_STATE_RUNNING);
+                    break;
+                }
             }
+
+            /* Notify GDB on halt/break */
+            if (g_gdb && (cpu->state == AVR_STATE_HALTED ||
+                          cpu->state == AVR_STATE_BREAK)) {
+                gdb_notify_stop(g_gdb, cpu->state);
+            }
+
             taskYIELD();
         } else if (cpu->state == AVR_STATE_SLEEPING) {
-            /* In sleep mode: tick timer, check interrupts */
             cpu->cycles += 1;
             if (cpu->periph_timer)
                 avr_timer0_tick(cpu, cpu->periph_timer, 1);
             avr_cpu_check_irq(cpu);
             if (cpu->state == AVR_STATE_SLEEPING)
-                vTaskDelay(1); /* Don't spin if still sleeping */
+                vTaskDelay(1);
         } else {
-            /* Halted or break — wait for reset via web UI */
+            /* Halted or break — wait for GDB or web UI reset */
             vTaskDelay(pdMS_TO_TICKS(50));
         }
     }
@@ -234,7 +274,7 @@ void app_main(void)
     /* 5. Connect WiFi */
     ESP_LOGI(TAG, "Starting WiFi...");
     if (wifi_init_sta() != ESP_OK) {
-        ESP_LOGW(TAG, "WiFi failed — web UI unavailable, continuing anyway");
+        ESP_LOGW(TAG, "WiFi failed — web UI and GDB unavailable");
     } else {
         ESP_LOGI(TAG, "Web UI at http://%s/", wifi_get_ip());
     }
@@ -261,7 +301,6 @@ void app_main(void)
         return;
     }
 
-    /* If no firmware, halt CPU until firmware is uploaded */
     if (!fw_loaded)
         cpu->state = AVR_STATE_HALTED;
 
@@ -279,7 +318,21 @@ void app_main(void)
         }
     }
 
-    /* 10. Start emulation task on core 1 */
+    /* 10. Start GDB stub */
+    if (GDB_ENABLED && wifi_is_connected()) {
+        int gdb_port = CONFIG_UCVM_GDB_PORT;
+        g_gdb = gdb_init(cpu, flash_buf, flash_words, gdb_port);
+        if (g_gdb) {
+            ESP_LOGI(TAG, "GDB stub listening on %s:%d",
+                     wifi_get_ip(), gdb_port);
+            ESP_LOGI(TAG, "Connect with: avr-gdb -ex \"target remote %s:%d\" firmware.elf",
+                     wifi_get_ip(), gdb_port);
+        } else {
+            ESP_LOGW(TAG, "GDB stub failed to start on port %d", gdb_port);
+        }
+    }
+
+    /* 11. Start emulation task on core 1 */
     xTaskCreatePinnedToCore(
         emu_task,
         "emu",
@@ -291,10 +344,19 @@ void app_main(void)
     );
     ESP_LOGI(TAG, "Emulation task pinned to core 1");
 
-    /* 11. Core 0: I/O bridge polling loop */
-    ESP_LOGI(TAG, "Core 0: I/O bridge poll + HTTP server");
+    /* 12. Core 0: I/O bridge polling + GDB polling */
+    ESP_LOGI(TAG, "Core 0: I/O bridge + GDB + HTTP server");
     while (1) {
         esp_bridge_poll(cpu);
-        vTaskDelay(pdMS_TO_TICKS(5)); /* ~200 Hz poll rate */
+
+        /* Poll GDB for incoming packets (non-blocking) */
+        if (g_gdb) {
+            /* Accept connection if not yet connected */
+            /* Note: gdb_wait_connect is blocking — we use a non-blocking
+             * accept approach instead. Check for new client. */
+            gdb_poll(g_gdb);
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(5));
     }
 }
