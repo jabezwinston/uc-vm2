@@ -109,7 +109,17 @@
       "Bash(timeout 2 ./ucvm51 examples/mcs51/timer_int/main.ihx)",
       "Bash(chmod +x:*)",
       "Bash(./ucvm51 -g 4444 -q examples/mcs51/timer_int/main.ihx)",
-      "Bash(awk '{print $5, $9}')"
+      "Bash(awk '{print $5, $9}')",
+      "Bash(git mv:*)",
+      "Bash(sed -i 's|#include \"../periph/avr_periph.h\"|#include \"avr_periph.h\"|' src/avr/avr_cpu.c)",
+      "Bash(sed -i 's|#include \"../core/avr_cpu.h\"|#include \"avr_cpu.h\"|' src/avr/avr_timer.c src/avr/avr_gpio.c src/avr/avr_uart.c)",
+      "Bash(sed -i 's|#include \"src/core/avr_cpu.h\"|#include \"avr_cpu.h\"|; s|#include \"src/periph/avr_periph.h\"|#include \"avr_periph.h\"|' src/avr/atmega328p.c src/avr/attiny85.c)",
+      "Bash(sed -i 's|#include \"src/mcs51/mcs51_cpu.h\"|#include \"mcs51_cpu.h\"|; s|#include \"src/mcs51/mcs51_periph.h\"|#include \"mcs51_periph.h\"|' src/mcs51/at89s52.c)",
+      "Bash(sed -i 's|#include \"../src/core/avr_cpu.h\"|#include \"../src/avr/avr_cpu.h\"|; s|#include \"../src/periph/avr_periph.h\"|#include \"../src/avr/avr_periph.h\"|' pc/main.c)",
+      "Bash(sed -i 's|#include \"../src/mcs51/mcs51_cpu.h\"|#include \"../src/mcs51/mcs51_cpu.h\"|' pc/main_mcs51.c)",
+      "Bash(timeout 3 ./ucvm -a 8051 -q examples/mcs51/uart_hello/main.ihx)",
+      "Bash(timeout 2 ./ucvm -a 8051 examples/mcs51/blink/main.ihx)",
+      "Bash(./ucvm:*)"
     ]
   }
 }

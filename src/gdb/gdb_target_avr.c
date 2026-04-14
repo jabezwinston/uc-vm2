@@ -3,7 +3,7 @@
  */
 #include "gdb_target.h"
 #include "gdb_stub.h"
-#include "../core/avr_cpu.h"
+#include "../avr/avr_cpu.h"
 #include <string.h>
 
 static const char hx[] = "0123456789abcdef";

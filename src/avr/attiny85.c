@@ -5,8 +5,8 @@
  * All I/O regs are in the standard I/O space (IN/OUT accessible).
  * No extended I/O. SRAM starts at 0x60.
  */
-#include "src/core/avr_cpu.h"
-#include "src/periph/avr_periph.h"
+#include "avr_cpu.h"
+#include "avr_periph.h"
 #include <stdlib.h>
 
 /* ---------- Timer0 register addresses ---------- */

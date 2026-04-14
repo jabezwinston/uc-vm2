@@ -6,8 +6,8 @@
  *   Extended I/O (LDS/STS only): data addr directly
  *   Handler table index = data_addr - 0x20
  */
-#include "src/core/avr_cpu.h"
-#include "src/periph/avr_periph.h"
+#include "avr_cpu.h"
+#include "avr_periph.h"
 #include <stdlib.h>
 
 /* ---------- Timer0 register addresses ---------- */

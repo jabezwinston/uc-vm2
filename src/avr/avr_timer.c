@@ -5,7 +5,7 @@
  * Prescaler divides CPU clock by 1/8/64/256/1024.
  */
 #include "avr_periph.h"
-#include "../core/avr_cpu.h"
+#include "avr_cpu.h"
 #include <stdlib.h>
 
 /* Prescaler divisor lookup */

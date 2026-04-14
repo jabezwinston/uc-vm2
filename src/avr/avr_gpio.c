@@ -6,7 +6,7 @@
  * PORTx changes trigger the I/O bridge callback.
  */
 #include "avr_periph.h"
-#include "../core/avr_cpu.h"
+#include "avr_cpu.h"
 #include <stdlib.h>
 #include <string.h>
 

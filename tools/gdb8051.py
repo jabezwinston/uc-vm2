@@ -2,7 +2,7 @@
 """
 gdb8051 — Python GDB-like debugger for 8051 (MCS-51) on ucvm.
 
-Connects to ucvm51's GDB RSP stub over TCP.
+Connects to ucvm's GDB RSP stub over TCP.
 Parses SDCC .cdb debug files for source-level debugging.
 
 Usage:
@@ -580,8 +580,8 @@ def main():
         dbg.run()
     except ConnectionRefusedError:
         print(f"Cannot connect to {args.host}:{args.port}")
-        print("Start ucvm51 with -g option first:")
-        print(f"  ./ucvm51 -g {args.port} firmware.ihx")
+        print("Start ucvm with -a 8051 -g option first:")
+        print(f"  ./ucvm -a 8051 -g {args.port} firmware.ihx")
         sys.exit(1)
     except Exception as e:
         print(f"Error: {e}")

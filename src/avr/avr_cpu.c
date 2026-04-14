@@ -3,7 +3,7 @@
  * AVR CPU: init, memory access, step wrapper, interrupt dispatch
  */
 #include "avr_cpu.h"
-#include "../periph/avr_periph.h"
+#include "avr_periph.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>

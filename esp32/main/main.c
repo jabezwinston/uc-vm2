@@ -2,20 +2,10 @@
  * ucvm - ESP32 entry point
  *
  * Dual-core operation:
- *   Core 1: AVR emulation loop (high priority, tight loop)
+ *   Core 1: MCU emulation loop (high priority, tight loop)
  *   Core 0: I/O bridge polling, web server, GDB stub, WiFi
  *
- * Boot sequence:
- *   1. Init NVS, SPIFFS
- *   2. Load variant + I/O bridge config from NVS
- *   3. Connect WiFi
- *   4. Load AVR firmware from SPIFFS
- *   5. Init CPU + peripherals
- *   6. Init I/O bridge backends (GPIO/UART/ADC)
- *   7. Start web server
- *   8. Start GDB stub (if enabled)
- *   9. Pin emulation task to core 1
- *  10. Core 0: poll I/O bridge + GDB
+ * Supports AVR and 8051 architectures (selectable via NVS / Kconfig).
  */
 #include <stdio.h>
 #include <string.h>
@@ -26,11 +16,20 @@
 #include "nvs_flash.h"
 #include "nvs.h"
 
-#include "src/core/avr_cpu.h"
-#include "src/periph/avr_periph.h"
 #include "src/util/ihex.h"
 #include "src/io/io_bridge.h"
 #include "src/gdb/gdb_stub.h"
+#include "src/gdb/gdb_target.h"
+
+#ifdef CONFIG_UCVM_ENABLE_AVR
+#include "src/avr/avr_cpu.h"
+#include "src/avr/avr_periph.h"
+#endif
+
+#ifdef CONFIG_UCVM_ENABLE_MCS51
+#include "src/mcs51/mcs51_cpu.h"
+#include "src/mcs51/mcs51_periph.h"
+#endif
 
 #include "esp_io_bridge.h"
 #include "esp_wifi_setup.h"
@@ -38,22 +37,70 @@
 
 static const char *TAG = "ucvm";
 
-/* Flash buffer — stored in DRAM, loaded from SPIFFS */
+/* ---------- Architecture abstraction ---------- */
+
+typedef enum { ARCH_AVR = 0, ARCH_MCS51 = 1 } ucvm_arch_t;
+
+static ucvm_arch_t active_arch;
+static void *g_cpu = NULL;  /* avr_cpu_t* or mcs51_cpu_t* */
+
+/* Arch-neutral state accessors (state enums match: 0=running,1=sleep,2=halt,3=break) */
+static uint8_t cpu_get_state(void)
+{
+#ifdef CONFIG_UCVM_ENABLE_AVR
+    if (active_arch == ARCH_AVR)
+        return ((avr_cpu_t *)g_cpu)->state;
+#endif
+#ifdef CONFIG_UCVM_ENABLE_MCS51
+    if (active_arch == ARCH_MCS51)
+        return ((mcs51_cpu_t *)g_cpu)->state;
+#endif
+    return 2; /* halted */
+}
+
+static uint16_t cpu_get_pc(void)
+{
+#ifdef CONFIG_UCVM_ENABLE_AVR
+    if (active_arch == ARCH_AVR)
+        return ((avr_cpu_t *)g_cpu)->pc;
+#endif
+#ifdef CONFIG_UCVM_ENABLE_MCS51
+    if (active_arch == ARCH_MCS51)
+        return ((mcs51_cpu_t *)g_cpu)->pc;
+#endif
+    return 0;
+}
+
+static void cpu_step(void)
+{
+#ifdef CONFIG_UCVM_ENABLE_AVR
+    if (active_arch == ARCH_AVR)
+        avr_cpu_step(g_cpu);
+#endif
+#ifdef CONFIG_UCVM_ENABLE_MCS51
+    if (active_arch == ARCH_MCS51)
+        mcs51_cpu_step(g_cpu);
+#endif
+}
+
+/* AVR flash buffer */
+#ifdef CONFIG_UCVM_ENABLE_AVR
 #define MAX_FLASH_WORDS 16384
 static uint16_t flash_buf[MAX_FLASH_WORDS];
+#endif
 
-/* I/O bridge config (runtime, modifiable via web) */
+/* I/O bridge config */
 static io_bridge_config_t bridge_config;
 
-/* GDB state (NULL if disabled) */
+/* GDB state */
 static gdb_state_t *g_gdb = NULL;
 
-/* NVS namespace */
+/* NVS */
 #define NVS_NAMESPACE "ucvm"
-#define NVS_KEY_BRIDGE "bridge"
+#define NVS_KEY_BRIDGE  "bridge"
 #define NVS_KEY_VARIANT "variant"
+#define NVS_KEY_ARCH    "arch"
 
-/* GDB config from Kconfig */
 #ifdef CONFIG_UCVM_GDB_ENABLE
 #define GDB_ENABLED 1
 #ifndef CONFIG_UCVM_GDB_PORT
@@ -69,94 +116,72 @@ int esp_config_save(const io_bridge_config_t *config)
 {
     uint8_t buf[256];
     int len = io_bridge_serialize(config, buf, sizeof(buf));
-    if (len < 0) {
-        ESP_LOGE(TAG, "Config serialize failed");
-        return -1;
-    }
-
+    if (len < 0) return -1;
     nvs_handle_t nvs;
-    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "NVS open failed: %s", esp_err_to_name(err));
-        return -1;
-    }
-
-    err = nvs_set_blob(nvs, NVS_KEY_BRIDGE, buf, len);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "NVS set_blob failed: %s", esp_err_to_name(err));
-        nvs_close(nvs);
-        return -1;
-    }
-
-    err = nvs_commit(nvs);
+    if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs) != ESP_OK) return -1;
+    esp_err_t err = nvs_set_blob(nvs, NVS_KEY_BRIDGE, buf, len);
+    if (err == ESP_OK) nvs_commit(nvs);
     nvs_close(nvs);
-
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "NVS commit failed: %s", esp_err_to_name(err));
-        return -1;
-    }
-
-    ESP_LOGI(TAG, "Bridge config saved to NVS (%d bytes, %d entries)",
-             len, config->num_entries);
-    return 0;
+    ESP_LOGI(TAG, "Bridge config saved (%d bytes, %d entries)", len, config->num_entries);
+    return (err == ESP_OK) ? 0 : -1;
 }
 
 static int esp_config_load(io_bridge_config_t *config)
 {
     nvs_handle_t nvs;
-    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs);
-    if (err != ESP_OK) {
-        ESP_LOGI(TAG, "No NVS config found (first boot?)");
-        return -1;
-    }
-
+    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs) != ESP_OK) return -1;
     uint8_t buf[256];
     size_t len = sizeof(buf);
-    err = nvs_get_blob(nvs, NVS_KEY_BRIDGE, buf, &len);
+    esp_err_t err = nvs_get_blob(nvs, NVS_KEY_BRIDGE, buf, &len);
     nvs_close(nvs);
-
-    if (err != ESP_OK) {
-        ESP_LOGI(TAG, "No bridge config in NVS");
-        return -1;
-    }
-
-    if (io_bridge_parse(buf, len, config) != 0) {
-        ESP_LOGW(TAG, "Invalid bridge config in NVS");
-        return -1;
-    }
-
-    ESP_LOGI(TAG, "Bridge config loaded from NVS (%d entries)", config->num_entries);
+    if (err != ESP_OK) return -1;
+    if (io_bridge_parse(buf, len, config) != 0) return -1;
+    ESP_LOGI(TAG, "Bridge config loaded (%d entries)", config->num_entries);
     return 0;
 }
 
-int esp_variant_save(const char *name)
+int esp_arch_save(ucvm_arch_t arch, const char *variant)
 {
     nvs_handle_t nvs;
-    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs);
-    if (err != ESP_OK) return -1;
-    nvs_set_str(nvs, NVS_KEY_VARIANT, name);
+    if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs) != ESP_OK) return -1;
+    nvs_set_u8(nvs, NVS_KEY_ARCH, (uint8_t)arch);
+    nvs_set_str(nvs, NVS_KEY_VARIANT, variant);
     nvs_commit(nvs);
     nvs_close(nvs);
     return 0;
 }
 
-static const avr_variant_t *esp_variant_load(void)
+int esp_variant_save(const char *name)
+{
+    return esp_arch_save(active_arch, name);
+}
+
+static ucvm_arch_t esp_arch_load(char *variant_out, size_t variant_size)
 {
     nvs_handle_t nvs;
-    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs);
-    if (err != ESP_OK)
-        return &avr_atmega328p; /* default */
+    ucvm_arch_t default_arch;
+#ifdef CONFIG_UCVM_DEFAULT_MCS51
+    default_arch = ARCH_MCS51;
+    const char *default_var = "at89s52";
+#else
+    default_arch = ARCH_AVR;
+    const char *default_var = "atmega328p";
+#endif
 
-    char name[32] = "";
-    size_t len = sizeof(name);
-    err = nvs_get_str(nvs, NVS_KEY_VARIANT, name, &len);
-    nvs_close(nvs);
-
-    if (err == ESP_OK) {
-        if (strcasecmp(name, "attiny85") == 0)
-            return &avr_attiny85;
+    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs) != ESP_OK) {
+        strncpy(variant_out, default_var, variant_size);
+        return default_arch;
     }
-    return &avr_atmega328p;
+    uint8_t arch_val;
+    if (nvs_get_u8(nvs, NVS_KEY_ARCH, &arch_val) != ESP_OK)
+        arch_val = (uint8_t)default_arch;
+    size_t len = variant_size;
+    if (nvs_get_str(nvs, NVS_KEY_VARIANT, variant_out, &len) != ESP_OK) {
+        const char *v = (arch_val == ARCH_MCS51) ? "at89s52" : "atmega328p";
+        strncpy(variant_out, v, variant_size);
+    }
+    nvs_close(nvs);
+    return (ucvm_arch_t)arch_val;
 }
 
 /* ---------- SPIFFS init ---------- */
@@ -174,7 +199,6 @@ static int init_spiffs(void)
         ESP_LOGE(TAG, "SPIFFS mount failed: %s", esp_err_to_name(ret));
         return -1;
     }
-
     size_t total = 0, used = 0;
     esp_spiffs_info("firmware", &total, &used);
     ESP_LOGI(TAG, "SPIFFS: %d/%d bytes used", (int)used, (int)total);
@@ -185,53 +209,59 @@ static int init_spiffs(void)
 
 static void emu_task(void *arg)
 {
-    avr_cpu_t *cpu = (avr_cpu_t *)arg;
-    ESP_LOGI(TAG, "Emulation started on core %d", xPortGetCoreID());
+    (void)arg;
+    ESP_LOGI(TAG, "Emulation started on core %d (arch=%s)",
+             xPortGetCoreID(), active_arch == ARCH_AVR ? "AVR" : "8051");
 
     while (1) {
-        /* If GDB is active and not running, wait */
         if (g_gdb && !gdb_is_running(g_gdb)) {
             vTaskDelay(pdMS_TO_TICKS(10));
             continue;
         }
 
-        if (cpu->state == AVR_STATE_RUNNING) {
-            /* Run a batch of instructions before yielding */
+        uint8_t state = cpu_get_state();
+
+        if (state == 0 /* RUNNING */) {
             for (int i = 0; i < 1000; i++) {
-                if (cpu->state != AVR_STATE_RUNNING)
+                if (cpu_get_state() != 0)
                     break;
-
-                /* GDB breakpoint check */
-                if (g_gdb && gdb_check_breakpoint(g_gdb, cpu->pc)) {
-                    gdb_notify_stop(g_gdb, AVR_STATE_BREAK);
+                if (g_gdb && gdb_check_breakpoint(g_gdb, cpu_get_pc())) {
+                    gdb_notify_stop(g_gdb, 3);
                     break;
                 }
-
-                avr_cpu_step(cpu);
-
-                /* GDB single-step check */
+                cpu_step();
                 if (g_gdb && gdb_is_single_stepping(g_gdb)) {
-                    gdb_notify_stop(g_gdb, AVR_STATE_RUNNING);
+                    gdb_notify_stop(g_gdb, 0);
                     break;
                 }
             }
-
-            /* Notify GDB on halt/break */
-            if (g_gdb && (cpu->state == AVR_STATE_HALTED ||
-                          cpu->state == AVR_STATE_BREAK)) {
-                gdb_notify_stop(g_gdb, cpu->state);
-            }
-
+            state = cpu_get_state();
+            if (g_gdb && (state == 2 || state == 3))
+                gdb_notify_stop(g_gdb, state);
             taskYIELD();
-        } else if (cpu->state == AVR_STATE_SLEEPING) {
-            cpu->cycles += 1;
-            if (cpu->periph_timer)
-                avr_timer0_tick(cpu, cpu->periph_timer, 1);
-            avr_cpu_check_irq(cpu);
-            if (cpu->state == AVR_STATE_SLEEPING)
-                vTaskDelay(1);
+
+        } else if (state == 1 /* SLEEPING */) {
+#ifdef CONFIG_UCVM_ENABLE_AVR
+            if (active_arch == ARCH_AVR) {
+                avr_cpu_t *cpu = g_cpu;
+                cpu->cycles += 1;
+                if (cpu->periph_timer)
+                    avr_timer0_tick(cpu, cpu->periph_timer, 1);
+                avr_cpu_check_irq(cpu);
+                if (cpu->state == AVR_STATE_SLEEPING)
+                    vTaskDelay(1);
+            }
+#endif
+#ifdef CONFIG_UCVM_ENABLE_MCS51
+            if (active_arch == ARCH_MCS51) {
+                mcs51_cpu_t *cpu = g_cpu;
+                cpu->cycles += 1;
+                mcs51_cpu_check_irq(cpu);
+                if (cpu->state == MCS51_STATE_SLEEPING)
+                    vTaskDelay(1);
+            }
+#endif
         } else {
-            /* Halted or break — wait for GDB or web UI reset */
             vTaskDelay(pdMS_TO_TICKS(50));
         }
     }
@@ -245,118 +275,128 @@ void app_main(void)
     ESP_LOGI(TAG, "  ucvm - Microcontroller Virtual Machine");
     ESP_LOGI(TAG, "========================================");
 
-    /* 1. Initialize NVS */
+    /* 1. NVS */
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        ESP_LOGW(TAG, "NVS needs erase");
         nvs_flash_erase();
         nvs_flash_init();
     }
 
-    /* 2. Initialize SPIFFS */
+    /* 2. SPIFFS */
     if (init_spiffs() != 0) {
-        ESP_LOGE(TAG, "SPIFFS init failed — cannot continue");
+        ESP_LOGE(TAG, "SPIFFS init failed");
         return;
     }
 
-    /* 3. Load variant from NVS */
-    const avr_variant_t *variant = esp_variant_load();
-    ESP_LOGI(TAG, "Variant: %s (%u bytes flash, %u bytes SRAM)",
-             variant->name, variant->flash_size,
-             variant->data_size - variant->sram_start);
+    /* 3. Load architecture + variant from NVS */
+    char variant_name[32];
+    active_arch = esp_arch_load(variant_name, sizeof(variant_name));
+    ESP_LOGI(TAG, "Architecture: %s, Variant: %s",
+             active_arch == ARCH_AVR ? "AVR" : "8051", variant_name);
 
-    /* 4. Load I/O bridge config from NVS */
+    /* 4. Bridge config from NVS */
     memset(&bridge_config, 0, sizeof(bridge_config));
-    if (esp_config_load(&bridge_config) != 0) {
+    if (esp_config_load(&bridge_config) != 0)
         ESP_LOGI(TAG, "Using empty bridge config");
-    }
 
-    /* 5. Connect WiFi */
+    /* 5. WiFi */
     ESP_LOGI(TAG, "Starting WiFi...");
-    if (wifi_init_sta() != ESP_OK) {
-        ESP_LOGW(TAG, "WiFi failed — web UI and GDB unavailable");
-    } else {
+    if (wifi_init_sta() != ESP_OK)
+        ESP_LOGW(TAG, "WiFi failed");
+    else
         ESP_LOGI(TAG, "Web UI at http://%s/", wifi_get_ip());
-    }
 
-    /* 6. Load AVR firmware from SPIFFS */
-    memset(flash_buf, 0xFF, sizeof(flash_buf));
-    uint32_t flash_words = variant->flash_size / 2;
-    if (flash_words > MAX_FLASH_WORDS)
-        flash_words = MAX_FLASH_WORDS;
-
+    /* 6. Initialize CPU */
     int fw_loaded = 0;
-    if (ihex_load("/firmware/avr.hex", flash_buf, flash_words) == 0) {
-        ESP_LOGI(TAG, "Firmware loaded from /firmware/avr.hex");
-        fw_loaded = 1;
-    } else {
-        ESP_LOGW(TAG, "No firmware found — upload via web UI at http://%s/",
-                 wifi_get_ip());
-    }
 
-    /* 7. Initialize CPU */
-    avr_cpu_t *cpu = avr_cpu_init(variant, flash_buf, variant->flash_size);
-    if (!cpu) {
-        ESP_LOGE(TAG, "CPU init failed — out of memory?");
+#ifdef CONFIG_UCVM_ENABLE_AVR
+    if (active_arch == ARCH_AVR) {
+        const avr_variant_t *variant = &avr_atmega328p;
+        if (strcasecmp(variant_name, "attiny85") == 0)
+            variant = &avr_attiny85;
+
+        ESP_LOGI(TAG, "AVR: %s, %u bytes flash", variant->name, variant->flash_size);
+
+        memset(flash_buf, 0xFF, sizeof(flash_buf));
+        uint32_t flash_words = variant->flash_size / 2;
+        if (flash_words > MAX_FLASH_WORDS) flash_words = MAX_FLASH_WORDS;
+
+        if (ihex_load("/firmware/avr.hex", flash_buf, flash_words) == 0) {
+            ESP_LOGI(TAG, "Firmware loaded from /firmware/avr.hex");
+            fw_loaded = 1;
+        }
+
+        avr_cpu_t *cpu = avr_cpu_init(variant, flash_buf, variant->flash_size);
+        if (!cpu) { ESP_LOGE(TAG, "CPU init failed"); return; }
+        if (!fw_loaded) cpu->state = AVR_STATE_HALTED;
+        g_cpu = cpu;
+
+        if (bridge_config.num_entries > 0)
+            esp_bridge_init(cpu, &bridge_config);
+    }
+#endif
+
+#ifdef CONFIG_UCVM_ENABLE_MCS51
+    if (active_arch == ARCH_MCS51) {
+        const mcs51_variant_t *variant = &mcs51_at89s52;
+        ESP_LOGI(TAG, "8051: %s, %u bytes code", variant->name, variant->code_size);
+
+        mcs51_cpu_t *cpu = mcs51_cpu_init(variant);
+        if (!cpu) { ESP_LOGE(TAG, "CPU init failed"); return; }
+
+        memset(cpu->code, 0xFF, cpu->code_size);
+        if (ihex_load_bytes("/firmware/mcs51.ihx", cpu->code, cpu->code_size) == 0) {
+            ESP_LOGI(TAG, "Firmware loaded from /firmware/mcs51.ihx");
+            fw_loaded = 1;
+        }
+        if (!fw_loaded) cpu->state = MCS51_STATE_HALTED;
+        g_cpu = cpu;
+    }
+#endif
+
+    if (!g_cpu) {
+        ESP_LOGE(TAG, "No CPU initialized — check Kconfig arch settings");
         return;
     }
-
     if (!fw_loaded)
-        cpu->state = AVR_STATE_HALTED;
+        ESP_LOGW(TAG, "No firmware — upload via web UI at http://%s/", wifi_get_ip());
 
-    /* 8. Initialize I/O bridge backends */
-    if (bridge_config.num_entries > 0) {
-        esp_bridge_init(cpu, &bridge_config);
-    } else {
-        ESP_LOGI(TAG, "No I/O bridges configured — configure via web UI");
-    }
-
-    /* 9. Start web server */
+    /* 7. Web server */
     if (wifi_is_connected()) {
-        if (webserver_start(cpu, &bridge_config) == 0) {
+        if (webserver_start(g_cpu, active_arch, &bridge_config) == 0)
             ESP_LOGI(TAG, "Web server running at http://%s/", wifi_get_ip());
-        }
     }
 
-    /* 10. Start GDB stub */
+    /* 8. GDB stub */
     if (GDB_ENABLED && wifi_is_connected()) {
         int gdb_port = CONFIG_UCVM_GDB_PORT;
-        g_gdb = gdb_init(cpu, flash_buf, flash_words, gdb_port);
-        if (g_gdb) {
-            ESP_LOGI(TAG, "GDB stub listening on %s:%d",
-                     wifi_get_ip(), gdb_port);
-            ESP_LOGI(TAG, "Connect with: avr-gdb -ex \"target remote %s:%d\" firmware.elf",
-                     wifi_get_ip(), gdb_port);
-        } else {
-            ESP_LOGW(TAG, "GDB stub failed to start on port %d", gdb_port);
+        const gdb_target_ops_t *ops = NULL;
+#ifdef CONFIG_UCVM_ENABLE_AVR
+        if (active_arch == ARCH_AVR) ops = &gdb_target_avr;
+#endif
+#ifdef CONFIG_UCVM_ENABLE_MCS51
+        if (active_arch == ARCH_MCS51) ops = &gdb_target_mcs51;
+#endif
+        if (ops) {
+            g_gdb = gdb_init(g_cpu, ops, gdb_port);
+            if (g_gdb)
+                ESP_LOGI(TAG, "GDB stub on %s:%d", wifi_get_ip(), gdb_port);
         }
     }
 
-    /* 11. Start emulation task on core 1 */
-    xTaskCreatePinnedToCore(
-        emu_task,
-        "emu",
-        4096,
-        cpu,
-        configMAX_PRIORITIES - 1,
-        NULL,
-        1  /* core 1 */
-    );
+    /* 9. Emulation task on core 1 */
+    xTaskCreatePinnedToCore(emu_task, "emu", 4096, NULL,
+                            configMAX_PRIORITIES - 1, NULL, 1);
     ESP_LOGI(TAG, "Emulation task pinned to core 1");
 
-    /* 12. Core 0: I/O bridge polling + GDB polling */
-    ESP_LOGI(TAG, "Core 0: I/O bridge + GDB + HTTP server");
+    /* 10. Core 0: polling loop */
     while (1) {
-        esp_bridge_poll(cpu);
-
-        /* Poll GDB for incoming packets (non-blocking) */
-        if (g_gdb) {
-            /* Accept connection if not yet connected */
-            /* Note: gdb_wait_connect is blocking — we use a non-blocking
-             * accept approach instead. Check for new client. */
+#ifdef CONFIG_UCVM_ENABLE_AVR
+        if (active_arch == ARCH_AVR)
+            esp_bridge_poll(g_cpu);
+#endif
+        if (g_gdb)
             gdb_poll(g_gdb);
-        }
-
         vTaskDelay(pdMS_TO_TICKS(5));
     }
 }

@@ -7,7 +7,7 @@
  * Status flags (UDRE, TXC, RXC) maintained automatically.
  */
 #include "avr_periph.h"
-#include "../core/avr_cpu.h"
+#include "avr_cpu.h"
 #include <stdlib.h>
 
 /* I/O bridge types */

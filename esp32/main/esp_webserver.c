@@ -1,21 +1,22 @@
 /*
  * ucvm - ESP32 Web Configuration Server
  *
- * Endpoints:
- *   GET  /              — HTML UI (served from SPIFFS /web/index.html)
- *   GET  /api/status    — JSON: CPU state, cycles, variant
- *   GET  /api/config    — JSON: I/O bridge config
- *   POST /api/config    — Update I/O bridge config (JSON body)
- *   POST /api/firmware  — Upload Intel HEX firmware
- *   POST /api/reset     — Reset AVR CPU
+ * Architecture-neutral: uses void* CPU pointer + arch enum.
  */
 #include "esp_webserver.h"
 #include "esp_http_server.h"
 #include "esp_spiffs.h"
 #include "esp_log.h"
-#include "src/periph/avr_periph.h"
 #include "src/util/ihex.h"
 #include "src/io/io_bridge.h"
+
+#ifdef CONFIG_UCVM_ENABLE_AVR
+#include "src/avr/avr_cpu.h"
+#include "src/avr/avr_periph.h"
+#endif
+#ifdef CONFIG_UCVM_ENABLE_MCS51
+#include "src/mcs51/mcs51_cpu.h"
+#endif
 
 #include <stdio.h>
 #include <string.h>
@@ -24,11 +25,84 @@
 
 static const char *TAG = "web";
 static httpd_handle_t server = NULL;
-static avr_cpu_t *s_cpu = NULL;
+static void *s_cpu = NULL;
+static int s_arch = 0;  /* 0 = AVR, 1 = MCS51 */
 static io_bridge_config_t *s_config = NULL;
 
 #define WEB_MOUNT_POINT "/web"
 #define INDEX_PATH      WEB_MOUNT_POINT "/index.html"
+
+/* ---------- Arch-neutral CPU accessors ---------- */
+
+static uint8_t web_cpu_state(void)
+{
+#ifdef CONFIG_UCVM_ENABLE_AVR
+    if (s_arch == 0) return ((avr_cpu_t *)s_cpu)->state;
+#endif
+#ifdef CONFIG_UCVM_ENABLE_MCS51
+    if (s_arch == 1) return ((mcs51_cpu_t *)s_cpu)->state;
+#endif
+    return 2;
+}
+
+static void web_cpu_set_state(uint8_t s)
+{
+#ifdef CONFIG_UCVM_ENABLE_AVR
+    if (s_arch == 0) ((avr_cpu_t *)s_cpu)->state = s;
+#endif
+#ifdef CONFIG_UCVM_ENABLE_MCS51
+    if (s_arch == 1) ((mcs51_cpu_t *)s_cpu)->state = s;
+#endif
+}
+
+static uint64_t web_cpu_cycles(void)
+{
+#ifdef CONFIG_UCVM_ENABLE_AVR
+    if (s_arch == 0) return ((avr_cpu_t *)s_cpu)->cycles;
+#endif
+#ifdef CONFIG_UCVM_ENABLE_MCS51
+    if (s_arch == 1) return ((mcs51_cpu_t *)s_cpu)->cycles;
+#endif
+    return 0;
+}
+
+static uint16_t web_cpu_pc(void)
+{
+#ifdef CONFIG_UCVM_ENABLE_AVR
+    if (s_arch == 0) return ((avr_cpu_t *)s_cpu)->pc;
+#endif
+#ifdef CONFIG_UCVM_ENABLE_MCS51
+    if (s_arch == 1) return ((mcs51_cpu_t *)s_cpu)->pc;
+#endif
+    return 0;
+}
+
+static const char *web_cpu_variant(void)
+{
+#ifdef CONFIG_UCVM_ENABLE_AVR
+    if (s_arch == 0) {
+        avr_cpu_t *c = s_cpu;
+        return c->variant ? c->variant->name : "avr";
+    }
+#endif
+#ifdef CONFIG_UCVM_ENABLE_MCS51
+    if (s_arch == 1) {
+        mcs51_cpu_t *c = s_cpu;
+        return c->variant ? c->variant->name : "8051";
+    }
+#endif
+    return "none";
+}
+
+static void web_cpu_reset(void)
+{
+#ifdef CONFIG_UCVM_ENABLE_AVR
+    if (s_arch == 0) avr_cpu_reset(s_cpu);
+#endif
+#ifdef CONFIG_UCVM_ENABLE_MCS51
+    if (s_arch == 1) mcs51_cpu_reset(s_cpu);
+#endif
+}
 
 /* ---------- SPIFFS mount for web content ---------- */
 
@@ -36,9 +110,7 @@ static int web_spiffs_mounted = 0;
 
 static int mount_web_spiffs(void)
 {
-    if (web_spiffs_mounted)
-        return 0;
-
+    if (web_spiffs_mounted) return 0;
     esp_vfs_spiffs_conf_t conf = {
         .base_path = WEB_MOUNT_POINT,
         .partition_label = "web",
@@ -51,10 +123,6 @@ static int mount_web_spiffs(void)
         return -1;
     }
     web_spiffs_mounted = 1;
-
-    size_t total = 0, used = 0;
-    esp_spiffs_info("web", &total, &used);
-    ESP_LOGI(TAG, "Web SPIFFS: %d/%d bytes used", (int)used, (int)total);
     return 0;
 }
 
@@ -64,14 +132,11 @@ static esp_err_t index_handler(httpd_req_t *req)
 {
     FILE *fp = fopen(INDEX_PATH, "r");
     if (!fp) {
-        ESP_LOGE(TAG, "Failed to open %s", INDEX_PATH);
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
                             "index.html not found on SPIFFS");
         return ESP_FAIL;
     }
-
     httpd_resp_set_type(req, "text/html");
-
     char buf[512];
     size_t n;
     while ((n = fread(buf, 1, sizeof(buf), fp)) > 0) {
@@ -82,7 +147,6 @@ static esp_err_t index_handler(httpd_req_t *req)
         }
     }
     fclose(fp);
-
     httpd_resp_send_chunk(req, NULL, 0);
     return ESP_OK;
 }
@@ -94,22 +158,16 @@ static esp_err_t status_handler(httpd_req_t *req)
         return ESP_FAIL;
     }
 
-    const char *state_str;
-    switch (s_cpu->state) {
-    case AVR_STATE_RUNNING:  state_str = "running"; break;
-    case AVR_STATE_SLEEPING: state_str = "sleeping"; break;
-    case AVR_STATE_HALTED:   state_str = "halted"; break;
-    case AVR_STATE_BREAK:    state_str = "break"; break;
-    default:                 state_str = "unknown"; break;
-    }
+    const char *state_names[] = { "running", "sleeping", "halted", "break" };
+    uint8_t st = web_cpu_state();
+    const char *state_str = (st < 4) ? state_names[st] : "unknown";
 
     char buf[256];
     int n = snprintf(buf, sizeof(buf),
-        "{\"state\":\"%s\",\"variant\":\"%s\",\"cycles\":%llu,\"pc\":%u}",
-        state_str,
-        s_cpu->variant ? s_cpu->variant->name : "none",
-        (unsigned long long)s_cpu->cycles,
-        (unsigned)s_cpu->pc);
+        "{\"arch\":\"%s\",\"state\":\"%s\",\"variant\":\"%s\",\"cycles\":%llu,\"pc\":%u}",
+        s_arch == 0 ? "avr" : "8051",
+        state_str, web_cpu_variant(),
+        (unsigned long long)web_cpu_cycles(), (unsigned)web_cpu_pc());
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_send(req, buf, n);
@@ -122,12 +180,9 @@ static esp_err_t config_get_handler(httpd_req_t *req)
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "No config");
         return ESP_FAIL;
     }
-
-    /* Build JSON response */
     char buf[1024];
     int pos = 0;
     pos += snprintf(buf + pos, sizeof(buf) - pos, "{\"entries\":[");
-
     for (uint8_t i = 0; i < s_config->num_entries; i++) {
         const io_bridge_entry_t *e = &s_config->entries[i];
         if (i > 0) pos += snprintf(buf + pos, sizeof(buf) - pos, ",");
@@ -135,15 +190,12 @@ static esp_err_t config_get_handler(httpd_req_t *req)
             "{\"type\":%d,\"avr\":%d,\"host\":%d,\"flags\":%d}",
             e->type, e->avr_resource, e->host_resource, e->flags);
     }
-
     pos += snprintf(buf + pos, sizeof(buf) - pos, "]}");
-
     httpd_resp_set_type(req, "application/json");
     httpd_resp_send(req, buf, pos);
     return ESP_OK;
 }
 
-/* Simple JSON key extraction (no full parser needed for our small payloads) */
 static int json_get_int(const char *json, const char *key, int *out)
 {
     char search[32];
@@ -164,13 +216,11 @@ static int json_get_str(const char *json, const char *key, char *out, int max)
     if (!p) return -1;
     p += strlen(search);
     int i = 0;
-    while (*p && *p != '"' && i < max - 1)
-        out[i++] = *p++;
+    while (*p && *p != '"' && i < max - 1) out[i++] = *p++;
     out[i] = '\0';
     return 0;
 }
 
-/* NVS save function (implemented in main.c) */
 extern int esp_config_save(const io_bridge_config_t *config);
 
 static esp_err_t config_post_handler(httpd_req_t *req)
@@ -179,7 +229,6 @@ static esp_err_t config_post_handler(httpd_req_t *req)
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "No config");
         return ESP_FAIL;
     }
-
     char body[512];
     int len = httpd_req_recv(req, body, sizeof(body) - 1);
     if (len <= 0) {
@@ -187,10 +236,8 @@ static esp_err_t config_post_handler(httpd_req_t *req)
         return ESP_FAIL;
     }
     body[len] = '\0';
-
     char action[16] = "";
     json_get_str(body, "action", action, sizeof(action));
-
     httpd_resp_set_type(req, "application/json");
 
     if (strcmp(action, "add") == 0) {
@@ -199,23 +246,20 @@ static esp_err_t config_post_handler(httpd_req_t *req)
             return ESP_OK;
         }
         int type = 0, avr = 0, host = 0, flags = 0;
-        json_get_int(body, "type",  &type);
-        json_get_int(body, "avr",   &avr);
-        json_get_int(body, "host",  &host);
+        json_get_int(body, "type", &type);
+        json_get_int(body, "avr", &avr);
+        json_get_int(body, "host", &host);
         json_get_int(body, "flags", &flags);
-
         io_bridge_entry_t *e = &s_config->entries[s_config->num_entries++];
-        e->type          = (uint8_t)type;
-        e->avr_resource  = (uint8_t)avr;
+        e->type = (uint8_t)type;
+        e->avr_resource = (uint8_t)avr;
         e->host_resource = (uint8_t)host;
-        e->flags         = (uint8_t)flags;
-
+        e->flags = (uint8_t)flags;
         httpd_resp_send(req, "{\"msg\":\"Entry added\"}", -1);
     } else if (strcmp(action, "del") == 0) {
         int index = -1;
         json_get_int(body, "index", &index);
         if (index >= 0 && index < s_config->num_entries) {
-            /* Shift remaining entries down */
             for (int i = index; i < s_config->num_entries - 1; i++)
                 s_config->entries[i] = s_config->entries[i + 1];
             s_config->num_entries--;
@@ -231,7 +275,6 @@ static esp_err_t config_post_handler(httpd_req_t *req)
     } else {
         httpd_resp_send(req, "{\"msg\":\"Unknown action\"}", -1);
     }
-
     return ESP_OK;
 }
 
@@ -241,21 +284,20 @@ static esp_err_t firmware_handler(httpd_req_t *req)
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "No CPU");
         return ESP_FAIL;
     }
-
-    /* Receive the hex file content */
     int total_len = req->content_len;
     if (total_len <= 0 || total_len > 128 * 1024) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid size");
         return ESP_FAIL;
     }
 
-    /* Write to SPIFFS */
-    FILE *fp = fopen("/firmware/avr.hex", "w");
+    /* Firmware path depends on architecture */
+    const char *fw_path = (s_arch == 0) ? "/firmware/avr.hex" : "/firmware/mcs51.ihx";
+
+    FILE *fp = fopen(fw_path, "w");
     if (!fp) {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Cannot open file");
         return ESP_FAIL;
     }
-
     char buf[512];
     int remaining = total_len;
     while (remaining > 0) {
@@ -270,22 +312,35 @@ static esp_err_t firmware_handler(httpd_req_t *req)
         remaining -= received;
     }
     fclose(fp);
-
     ESP_LOGI(TAG, "Firmware uploaded (%d bytes)", total_len);
 
-    /* Reload firmware into flash buffer */
-    uint16_t *flash = (uint16_t *)s_cpu->flash;
-    uint32_t flash_words = s_cpu->flash_size / 2;
-    memset(flash, 0xFF, flash_words * 2);
-
-    if (ihex_load("/firmware/avr.hex", flash, flash_words) != 0) {
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_send(req, "{\"msg\":\"HEX parse error\"}", -1);
-        return ESP_OK;
+    /* Reload firmware and reset */
+#ifdef CONFIG_UCVM_ENABLE_AVR
+    if (s_arch == 0) {
+        avr_cpu_t *cpu = s_cpu;
+        uint16_t *flash = (uint16_t *)cpu->flash;
+        uint32_t flash_words = cpu->flash_size / 2;
+        memset(flash, 0xFF, flash_words * 2);
+        if (ihex_load(fw_path, flash, flash_words) != 0) {
+            httpd_resp_set_type(req, "application/json");
+            httpd_resp_send(req, "{\"msg\":\"HEX parse error\"}", -1);
+            return ESP_OK;
+        }
+        avr_cpu_reset(cpu);
     }
-
-    /* Reset CPU */
-    avr_cpu_reset(s_cpu);
+#endif
+#ifdef CONFIG_UCVM_ENABLE_MCS51
+    if (s_arch == 1) {
+        mcs51_cpu_t *cpu = s_cpu;
+        memset(cpu->code, 0xFF, cpu->code_size);
+        if (ihex_load_bytes(fw_path, cpu->code, cpu->code_size) != 0) {
+            httpd_resp_set_type(req, "application/json");
+            httpd_resp_send(req, "{\"msg\":\"HEX parse error\"}", -1);
+            return ESP_OK;
+        }
+        mcs51_cpu_reset(cpu);
+    }
+#endif
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_send(req, "{\"msg\":\"Firmware uploaded and CPU reset\"}", -1);
@@ -298,8 +353,6 @@ static esp_err_t reset_handler(httpd_req_t *req)
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "No CPU");
         return ESP_FAIL;
     }
-
-    /* Check if this is a halt request */
     if (req->content_len > 0) {
         char body[128];
         int len = httpd_req_recv(req, body, sizeof(body) - 1);
@@ -308,15 +361,14 @@ static esp_err_t reset_handler(httpd_req_t *req)
             char action[16] = "";
             json_get_str(body, "action", action, sizeof(action));
             if (strcmp(action, "halt") == 0) {
-                s_cpu->state = AVR_STATE_HALTED;
+                web_cpu_set_state(2); /* HALTED */
                 httpd_resp_set_type(req, "application/json");
                 httpd_resp_send(req, "{\"msg\":\"CPU halted\"}", -1);
                 return ESP_OK;
             }
         }
     }
-
-    avr_cpu_reset(s_cpu);
+    web_cpu_reset();
     httpd_resp_set_type(req, "application/json");
     httpd_resp_send(req, "{\"msg\":\"CPU reset\"}", -1);
     return ESP_OK;
@@ -324,14 +376,14 @@ static esp_err_t reset_handler(httpd_req_t *req)
 
 /* ---------- Public API ---------- */
 
-int webserver_start(avr_cpu_t *cpu, io_bridge_config_t *config)
+int webserver_start(void *cpu, int arch, io_bridge_config_t *config)
 {
     s_cpu = cpu;
+    s_arch = arch;
     s_config = config;
 
-    /* Mount web SPIFFS partition */
     if (mount_web_spiffs() != 0) {
-        ESP_LOGE(TAG, "Cannot mount web SPIFFS — web UI unavailable");
+        ESP_LOGE(TAG, "Cannot mount web SPIFFS");
         return -1;
     }
 
@@ -342,36 +394,20 @@ int webserver_start(avr_cpu_t *cpu, io_bridge_config_t *config)
 
     esp_err_t err = httpd_start(&server, &http_config);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to start HTTP server: %s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "HTTP server start failed: %s", esp_err_to_name(err));
         return -1;
     }
 
-    /* Register URI handlers */
-    const httpd_uri_t index_uri = {
-        .uri = "/", .method = HTTP_GET, .handler = index_handler
+    const httpd_uri_t uris[] = {
+        { "/",             HTTP_GET,  index_handler,       NULL },
+        { "/api/status",   HTTP_GET,  status_handler,      NULL },
+        { "/api/config",   HTTP_GET,  config_get_handler,  NULL },
+        { "/api/config",   HTTP_POST, config_post_handler, NULL },
+        { "/api/firmware", HTTP_POST, firmware_handler,     NULL },
+        { "/api/reset",    HTTP_POST, reset_handler,       NULL },
     };
-    const httpd_uri_t status_uri = {
-        .uri = "/api/status", .method = HTTP_GET, .handler = status_handler
-    };
-    const httpd_uri_t config_get_uri = {
-        .uri = "/api/config", .method = HTTP_GET, .handler = config_get_handler
-    };
-    const httpd_uri_t config_post_uri = {
-        .uri = "/api/config", .method = HTTP_POST, .handler = config_post_handler
-    };
-    const httpd_uri_t firmware_uri = {
-        .uri = "/api/firmware", .method = HTTP_POST, .handler = firmware_handler
-    };
-    const httpd_uri_t reset_uri = {
-        .uri = "/api/reset", .method = HTTP_POST, .handler = reset_handler
-    };
-
-    httpd_register_uri_handler(server, &index_uri);
-    httpd_register_uri_handler(server, &status_uri);
-    httpd_register_uri_handler(server, &config_get_uri);
-    httpd_register_uri_handler(server, &config_post_uri);
-    httpd_register_uri_handler(server, &firmware_uri);
-    httpd_register_uri_handler(server, &reset_uri);
+    for (int i = 0; i < (int)(sizeof(uris) / sizeof(uris[0])); i++)
+        httpd_register_uri_handler(server, &uris[i]);
 
     ESP_LOGI(TAG, "HTTP server started on port %d", http_config.server_port);
     return 0;
@@ -379,8 +415,5 @@ int webserver_start(avr_cpu_t *cpu, io_bridge_config_t *config)
 
 void webserver_stop(void)
 {
-    if (server) {
-        httpd_stop(server);
-        server = NULL;
-    }
+    if (server) { httpd_stop(server); server = NULL; }
 }

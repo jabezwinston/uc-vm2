@@ -1,5 +1,36 @@
 menu "ucvm Configuration"
 
+    menu "Architecture Support"
+
+        config UCVM_ENABLE_AVR
+            bool "Enable AVR emulation"
+            default y
+            help
+                Include AVR (ATMega328P, ATtiny85) emulation support.
+
+        config UCVM_ENABLE_MCS51
+            bool "Enable 8051 (MCS-51) emulation"
+            default y
+            help
+                Include 8051 (AT89S52) emulation support.
+
+        choice UCVM_DEFAULT_ARCH
+            prompt "Default architecture"
+            default UCVM_DEFAULT_AVR
+            help
+                Architecture to use on first boot (before NVS config).
+
+            config UCVM_DEFAULT_AVR
+                bool "AVR"
+                depends on UCVM_ENABLE_AVR
+
+            config UCVM_DEFAULT_MCS51
+                bool "8051 (MCS-51)"
+                depends on UCVM_ENABLE_MCS51
+        endchoice
+
+    endmenu
+
     config UCVM_WIFI_SSID
         string "WiFi SSID"
         default "D-Link_DIR-615"
@@ -16,8 +47,8 @@ menu "ucvm Configuration"
         bool "Enable GDB stub over WiFi"
         default y
         help
-            Enable the GDB RSP stub over TCP. Allows avr-gdb to
-            connect via WiFi for remote debugging of the emulated AVR.
+            Enable the GDB RSP stub over TCP. Allows remote debugging
+            of the emulated MCU.
 
     config UCVM_GDB_PORT
         int "GDB TCP port"

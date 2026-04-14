@@ -1,8 +1,8 @@
 /*
  * ucvm - AT89S52 variant descriptor
  */
-#include "src/mcs51/mcs51_cpu.h"
-#include "src/mcs51/mcs51_periph.h"
+#include "mcs51_cpu.h"
+#include "mcs51_periph.h"
 
 /* GPIO: fire bridge callback on P0-P3 writes */
 static void port_write(mcs51_cpu_t *cpu, uint8_t addr, uint8_t val, void *ctx)

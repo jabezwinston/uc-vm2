@@ -1,10 +1,14 @@
 /*
  * ucvm - ESP32 I/O Bridge Backends
  *
- * Connects AVR emulated peripherals to real ESP32 hardware.
+ * Connects emulated MCU peripherals to real ESP32 hardware.
+ * Currently AVR-specific for GPIO ext_pins and UART drain.
  */
 #include "esp_io_bridge.h"
-#include "src/periph/avr_periph.h"
+
+#ifdef CONFIG_UCVM_ENABLE_AVR
+
+#include "src/avr/avr_periph.h"
 #include "src/io/io_bridge.h"
 
 #include "driver/gpio.h"
@@ -379,3 +383,5 @@ void esp_bridge_uart_rx_push(avr_cpu_t *cpu, uint8_t byte)
     if (cpu->periph_uart)
         avr_uart_rx_push(cpu, cpu->periph_uart, byte);
 }
+
+#endif /* CONFIG_UCVM_ENABLE_AVR */
