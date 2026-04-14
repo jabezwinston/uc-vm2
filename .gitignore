@@ -2,3 +2,15 @@
 *.elf
 *.hex
 build/
+*.rel
+*.map
+*.bin
+*.sym
+*.adb
+*.cdb
+*.ihx
+*.mem
+*.lst
+*.omf
+*.lk
+*.rst

@@ -199,7 +199,7 @@ int main(int argc, char *argv[])
     /* GDB stub */
     gdb_state_t *gdb = NULL;
     if (gdb_port > 0) {
-        gdb = gdb_init(cpu, flash, flash_words, gdb_port);
+        gdb = gdb_init_avr(cpu, flash, flash_words, gdb_port);
         if (!gdb) {
             fprintf(stderr, "Error: failed to start GDB stub on port %d\n", gdb_port);
             restore_stdin();

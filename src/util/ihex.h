@@ -17,4 +17,10 @@ int ihex_load(const char *filename, uint16_t *flash, uint32_t flash_words);
 struct _IO_FILE; /* forward decl for FILE */
 int ihex_load_fp(void *fp, uint16_t *flash, uint32_t flash_words);
 
+/* Load an Intel HEX file into a byte buffer (byte-addressed, for 8051 code).
+ * buf: output buffer
+ * buf_size: max bytes
+ * Returns 0 on success, -1 on error. */
+int ihex_load_bytes(const char *filename, uint8_t *buf, uint32_t buf_size);
+
 #endif /* IHEX_H */

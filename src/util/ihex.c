@@ -150,3 +150,72 @@ int ihex_load(const char *filename, uint16_t *flash, uint32_t flash_words)
     fclose(fp);
     return ret;
 }
+
+/* ---------- Byte-addressed loader (for 8051 code memory) ---------- */
+
+static int ihex_load_bytes_fp(FILE *fp, uint8_t *buf, uint32_t buf_size)
+{
+    char line[600];
+    uint32_t base_addr = 0;
+    int line_num = 0;
+
+    while (fgets(line, sizeof(line), fp)) {
+        line_num++;
+        char *p = line;
+        size_t len = strlen(p);
+        while (len > 0 && (p[len-1] == '\n' || p[len-1] == '\r'))
+            p[--len] = '\0';
+        if (len == 0) continue;
+        if (p[0] != ':') continue;
+        p++; len--;
+        if (len < 10) continue;
+
+        int byte_count = parse_hex_byte(p);
+        int addr_hi    = parse_hex_byte(p + 2);
+        int addr_lo    = parse_hex_byte(p + 4);
+        int rec_type   = parse_hex_byte(p + 6);
+        if (byte_count < 0 || addr_hi < 0 || addr_lo < 0 || rec_type < 0)
+            continue;
+
+        uint16_t addr = (addr_hi << 8) | addr_lo;
+
+        switch (rec_type) {
+        case 0x00:
+            for (int i = 0; i < byte_count; i++) {
+                int b = parse_hex_byte((char *)p + 8 + i * 2);
+                if (b < 0) break;
+                uint32_t byte_addr = base_addr + addr + i;
+                if (byte_addr < buf_size)
+                    buf[byte_addr] = (uint8_t)b;
+            }
+            break;
+        case 0x01:
+            return 0;
+        case 0x02: {
+            int hi = parse_hex_byte((char *)p + 8);
+            int lo = parse_hex_byte((char *)p + 10);
+            base_addr = ((hi << 8) | lo) << 4;
+            break;
+        }
+        case 0x04: {
+            int hi = parse_hex_byte((char *)p + 8);
+            int lo = parse_hex_byte((char *)p + 10);
+            base_addr = ((uint32_t)(hi << 8) | lo) << 16;
+            break;
+        }
+        }
+    }
+    return 0;
+}
+
+int ihex_load_bytes(const char *filename, uint8_t *buf, uint32_t buf_size)
+{
+    FILE *fp = fopen(filename, "r");
+    if (!fp) {
+        fprintf(stderr, "ihex: cannot open '%s'\n", filename);
+        return -1;
+    }
+    int ret = ihex_load_bytes_fp(fp, buf, buf_size);
+    fclose(fp);
+    return ret;
+}
