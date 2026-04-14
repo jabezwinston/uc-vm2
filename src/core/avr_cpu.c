@@ -6,6 +6,7 @@
 #include "../periph/avr_periph.h"
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
 
 /* ---------- Special I/O addresses ---------- */
 #define IO_SREG  0x3F  /* I/O addr of SREG */
@@ -238,9 +239,9 @@ void avr_cpu_check_irq(avr_cpu_t *cpu)
             cpu->sreg &= ~SREG_I;
             cpu->data[IO_SREG + IO_BASE] = cpu->sreg;
 
-            /* Push PC (return address) onto stack */
-            avr_push(cpu, (cpu->pc >> 8) & 0xFF);
+            /* Push PC (return address) onto stack: PCL first, then PCH */
             avr_push(cpu, cpu->pc & 0xFF);
+            avr_push(cpu, (cpu->pc >> 8) & 0xFF);
 
             /* Jump to vector address */
             cpu->pc = vec * cpu->variant->vector_size;
@@ -262,8 +263,15 @@ uint8_t avr_cpu_step(avr_cpu_t *cpu)
     if (cpu->state != AVR_STATE_RUNNING)
         return 0;
 
+    uint16_t old_pc = cpu->pc;
     uint8_t cycles = avr_decode_execute(cpu);
     cpu->cycles += cycles;
+
+    if (cpu->state == AVR_STATE_HALTED) {
+        uint16_t opcode = (old_pc < cpu->flash_size / 2) ? cpu->flash[old_pc] : 0xFFFF;
+        fprintf(stderr, "HALT: PC=0x%04X opcode=0x%04X cycles=%llu SP=0x%04X SREG=0x%02X\n",
+                old_pc, opcode, (unsigned long long)cpu->cycles, cpu->sp, cpu->sreg);
+    }
 
     /* Tick peripherals */
     if (cpu->periph_timer)

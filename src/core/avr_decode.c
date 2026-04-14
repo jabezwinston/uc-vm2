@@ -7,6 +7,7 @@
  */
 #include "avr_cpu.h"
 #include <string.h>
+#include <stdio.h>
 
 /* Stack operations (defined in avr_cpu.c) */
 extern void avr_push(avr_cpu_t *cpu, uint8_t val);
@@ -116,6 +117,11 @@ static inline void flags_dec(avr_cpu_t *cpu, uint8_t R)
 uint8_t avr_decode_execute(avr_cpu_t *cpu)
 {
     uint16_t pc = cpu->pc;
+    if (pc >= cpu->flash_size / 2) {
+        fprintf(stderr, "FAULT: PC=0x%04X out of flash bounds\n", pc);
+        cpu->state = AVR_STATE_HALTED;
+        return 1;
+    }
     uint16_t opcode = cpu->flash[pc];
     uint8_t cycles = 1; /* default 1 cycle */
 
@@ -669,16 +675,16 @@ uint8_t avr_decode_execute(avr_cpu_t *cpu)
                     cpu->sreg &= ~(1 << s);
                     cycles = 1;
                 } else if (opcode == 0x9508) {
-                    /* RET */
-                    uint8_t lo = avr_pop(cpu);
-                    uint8_t hi = avr_pop(cpu);
-                    cpu->pc = (hi << 8) | lo;
+                    /* RET: SP+1→PCH, SP+1→PCL */
+                    uint8_t pch = avr_pop(cpu);
+                    uint8_t pcl = avr_pop(cpu);
+                    cpu->pc = ((uint16_t)pch << 8) | pcl;
                     cycles = 4;
                 } else if (opcode == 0x9518) {
-                    /* RETI */
-                    uint8_t lo = avr_pop(cpu);
-                    uint8_t hi = avr_pop(cpu);
-                    cpu->pc = (hi << 8) | lo;
+                    /* RETI: SP+1→PCH, SP+1→PCL */
+                    uint8_t pch = avr_pop(cpu);
+                    uint8_t pcl = avr_pop(cpu);
+                    cpu->pc = ((uint16_t)pch << 8) | pcl;
                     cpu->sreg |= SREG_I;
                     cycles = 4;
                 } else if (opcode == 0x9588) {

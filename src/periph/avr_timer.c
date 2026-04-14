@@ -118,16 +118,24 @@ void avr_timer0_tick(avr_cpu_t *cpu, avr_timer0_t *timer, uint8_t elapsed)
             }
         } else {
             /* Normal, CTC, Fast PWM: count up */
-            tcnt++;
-            if (wgm == 2 && tcnt > top) {
-                /* CTC: clear on compare match */
+            uint16_t next = (uint16_t)tcnt + 1;
+            if (next > top) {
+                /* Overflow / wrap */
                 tcnt = 0;
-            } else if (tcnt > top) {
-                tcnt = 0;
-                tifr |= (1 << TOV0_BIT);
+                /* TOV0 set at MAX for Normal/CTC, at TOP for Fast PWM */
+                if (wgm == 0 || wgm == 3) {
+                    /* Normal / Fast PWM TOP=0xFF: overflow at 0xFF→0 */
+                    tifr |= (1 << TOV0_BIT);
+                } else if (wgm == 7) {
+                    /* Fast PWM TOP=OCR0A: overflow at OCR0A→0 */
+                    tifr |= (1 << TOV0_BIT);
+                }
+                /* CTC (wgm=2): clear at match, TOV0 set at real MAX */
+            } else {
+                tcnt = (uint8_t)next;
             }
-            /* Normal mode overflow at 0xFF→0x00 */
-            if (wgm == 0 && old_tcnt == 0xFF && tcnt == 0)
+            /* CTC overflow at 0xFF (rare — only if OCR0A > counter ever reaches 0xFF) */
+            if (wgm == 2 && old_tcnt == 0xFF && tcnt == 0)
                 tifr |= (1 << TOV0_BIT);
         }
 
@@ -141,10 +149,18 @@ void avr_timer0_tick(avr_cpu_t *cpu, avr_timer0_t *timer, uint8_t elapsed)
         cpu->data[cfg->tcnt0 + 0x20] = tcnt;
         cpu->data[cfg->tifr + 0x20]  = tifr;
 
-        /* Set interrupt pending flags */
-        if ((tifr & (1 << TOV0_BIT)) && (timsk & (1 << cfg->toie_bit)))
+        /* Set interrupt pending flags.
+         * Auto-clear TIFR flags when queueing interrupt — simulates the
+         * real AVR hardware behavior of clearing flags on ISR entry. */
+        if ((tifr & (1 << TOV0_BIT)) && (timsk & (1 << cfg->toie_bit))) {
             cpu->irq_pending |= (1u << cfg->tov_vec);
-        if ((tifr & (1 << OCF0A_BIT)) && (timsk & (1 << cfg->ocie0a_bit)))
+            tifr &= ~(1 << TOV0_BIT);
+            cpu->data[cfg->tifr + 0x20] = tifr;
+        }
+        if ((tifr & (1 << OCF0A_BIT)) && (timsk & (1 << cfg->ocie0a_bit))) {
             cpu->irq_pending |= (1u << cfg->oca_vec);
+            tifr &= ~(1 << OCF0A_BIT);
+            cpu->data[cfg->tifr + 0x20] = tifr;
+        }
     }
 }

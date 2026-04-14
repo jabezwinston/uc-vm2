@@ -64,6 +64,38 @@ static const avr_uart_config_t uart_config = {
     .txc_vec  = 20,   /* USART_TX_vect */
 };
 
+/* ---------- ADC stub ---------- */
+/* ADCSRA = mem 0x7A → index 0x5A
+ * ADCSRB = mem 0x7B → index 0x5B
+ * ADMUX  = mem 0x7C → index 0x5C
+ * ADCL   = mem 0x78 → index 0x58
+ * ADCH   = mem 0x79 → index 0x59
+ */
+#define ADC_ADCSRA_IO  0x5A
+#define ADC_ADCL_IO    0x58
+#define ADC_ADCH_IO    0x59
+#define ADC_ADSC_BIT   6
+#define ADC_ADIF_BIT   4
+
+static void adc_write(avr_cpu_t *cpu, uint8_t io_addr, uint8_t val, void *ctx)
+{
+    (void)ctx;
+    if (io_addr == ADC_ADCSRA_IO) {
+        /* If ADSC (start conversion) is set, complete it immediately */
+        if (val & (1 << ADC_ADSC_BIT)) {
+            val &= ~(1 << ADC_ADSC_BIT); /* clear ADSC = conversion done */
+            val |= (1 << ADC_ADIF_BIT);  /* set ADIF = interrupt flag */
+            /* ADC result = 0 (no analog input in emulator) */
+            cpu->data[ADC_ADCL_IO + 0x20] = 0;
+            cpu->data[ADC_ADCH_IO + 0x20] = 0;
+        }
+        /* Writing 1 to ADIF clears it */
+        if (val & (1 << ADC_ADIF_BIT))
+            val &= ~(1 << ADC_ADIF_BIT);
+        cpu->data[io_addr + 0x20] = val;
+    }
+}
+
 /* ---------- Peripheral init ---------- */
 
 static void atmega328p_periph_init(avr_cpu_t *cpu)
@@ -71,6 +103,9 @@ static void atmega328p_periph_init(avr_cpu_t *cpu)
     cpu->periph_timer = avr_timer0_init(cpu, &timer0_config);
     cpu->periph_gpio  = avr_gpio_init(cpu, gpio_ports, 3);
     cpu->periph_uart  = avr_uart_init(cpu, &uart_config);
+
+    /* ADC stub: immediate conversion complete */
+    avr_io_register(cpu, ADC_ADCSRA_IO, NULL, adc_write, NULL);
 }
 
 /* ---------- Variant descriptor ---------- */
