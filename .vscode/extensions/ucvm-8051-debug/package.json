@@ -1,0 +1,56 @@
+{
+    "name": "ucvm-8051-debug",
+    "displayName": "ucvm 8051 Debugger",
+    "version": "0.1.0",
+    "publisher": "ucvm",
+    "engines": { "vscode": "^1.75.0" },
+    "categories": ["Debuggers"],
+    "contributes": {
+        "debuggers": [
+            {
+                "type": "8051",
+                "label": "8051 Debug (ucvm)",
+                "program": "./dap8051_wrapper.sh",
+                "runtime": "",
+                "configurationAttributes": {
+                    "launch": {
+                        "required": ["cdbFile"],
+                        "properties": {
+                            "host": {
+                                "type": "string",
+                                "description": "ucvm GDB stub host",
+                                "default": "localhost"
+                            },
+                            "port": {
+                                "type": "number",
+                                "description": "ucvm GDB stub TCP port",
+                                "default": 1234
+                            },
+                            "cdbFile": {
+                                "type": "string",
+                                "description": "Path to SDCC .cdb debug symbols file"
+                            },
+                            "sourceDirs": {
+                                "type": "array",
+                                "description": "Directories to search for source files",
+                                "items": { "type": "string" },
+                                "default": ["."]
+                            }
+                        }
+                    }
+                },
+                "initialConfigurations": [
+                    {
+                        "type": "8051",
+                        "request": "launch",
+                        "name": "8051: Debug",
+                        "host": "localhost",
+                        "port": 1234,
+                        "cdbFile": "${workspaceFolder}/examples/mcs51/blink/main.cdb",
+                        "sourceDirs": ["${workspaceFolder}/examples/mcs51/blink"]
+                    }
+                ]
+            }
+        ]
+    }
+}

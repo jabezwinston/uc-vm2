@@ -51,18 +51,24 @@ SFR_BY_NAME = {v.lower(): k for k, v in SFR_NAMES.items()}
 # ---------- CDB Parser ----------
 
 class CdbParser:
-    """Parse SDCC .cdb debug file for symbol and line information."""
+    """Parse SDCC .cdb debug file for symbol, variable, and line information."""
 
     def __init__(self, filename=None):
-        self.symbols = {}       # name → {'addr': int, 'type': str, 'scope': str}
+        self.symbols = {}       # name → {'addr': int, 'type': str, 'scope': str, 'size': int, 'class': str}
         self.functions = {}     # name → addr
+        self.func_end = {}      # name → end_addr (from XG$ records)
+        self.locals = {}        # (func, varname) → {'addr': int}
+        self.addr_to_func = {}  # code_addr → func_name (built from functions + func_end)
         self.addr_to_line = {}  # code_addr → (file, line)
         self.line_to_addr = {}  # (file, line) → code_addr
         self.source_files = {}  # filename → [lines]
+        self.cdb_dir = '.'     # directory containing .cdb file (for source search)
+        self._pending_syms = {} # name → {'type': str, 'class': str, 'size': int} — S: before L:
         if filename:
             self.parse(filename)
 
     def parse(self, filename):
+        self.cdb_dir = os.path.dirname(os.path.abspath(filename)) if filename else '.'
         try:
             with open(filename) as f:
                 for line in f:
@@ -76,8 +82,30 @@ class CdbParser:
         except FileNotFoundError:
             print(f"Warning: CDB file '{filename}' not found — no source info")
 
+        # Build addr_to_func map from functions + func_end.
+        # SDCC ISR preambles (register saves) emit C$ records before the G$
+        # function entry. Extend each function's start backwards to cover its
+        # preamble, but only up to the previous function's end address.
+        raw = []
+        for name, start in self.functions.items():
+            if start is None:
+                continue
+            end = self.func_end.get(name, start + 0x1000)
+            raw.append((start, end, name))
+        raw.sort()
+
+        func_ranges = []
+        for idx, (start, end, name) in enumerate(raw):
+            prev_end = raw[idx - 1][1] if idx > 0 else 0
+            earliest = start
+            for addr in self.addr_to_line:
+                if prev_end <= addr < start:
+                    earliest = min(earliest, addr)
+            func_ranges.append((earliest, end, name))
+        func_ranges.sort()
+        self._func_ranges = func_ranges
+
     def _parse_label(self, data):
-        # L:G$name$scope:ADDR or L:C$file.c$line$scope:ADDR
         m = re.match(r'([^:]+):([0-9A-Fa-f]+)$', data)
         if not m:
             return
@@ -93,32 +121,59 @@ class CdbParser:
             self.line_to_addr[(fname, lineno)] = addr
             return
 
+        # Function end marker: XG$name$...
+        xm = re.match(r'XG\$([^$]+)\$', name_part)
+        if xm:
+            self.func_end[xm.group(1)] = addr
+            return
+
+        # Local variable: Lmodule.func$varname$scope:addr
+        lm = re.match(r'L[^.]*\.([^$]+)\$([^$]+)\$', name_part)
+        if lm:
+            func = lm.group(1)
+            var = lm.group(2)
+            self.locals[(func, var)] = {'addr': addr}
+            return
+
         # Function entry: G$name$0$0
         fm = re.match(r'G\$([^$]+)\$0\$0$', name_part)
         if fm:
-            self.functions[fm.group(1)] = addr
+            fname = fm.group(1)
+            self.functions[fname] = addr
             return
 
-        # Global symbol: G$name$scope
+        # Global symbol: G$name$scope (not a function)
         gm = re.match(r'G\$([^$]+)\$', name_part)
         if gm:
-            self.symbols[gm.group(1)] = {'addr': addr, 'scope': 'global'}
+            name = gm.group(1)
+            if name not in self.functions:
+                entry = {'addr': addr, 'scope': 'global'}
+                # Apply pending type info from S: record (which came before L:)
+                if name in self._pending_syms:
+                    entry.update(self._pending_syms.pop(name))
+                self.symbols[name] = entry
 
     def _parse_symbol(self, data):
-        # S:G$name$scope({type}),class,...
-        m = re.match(r'G\$([^$]+)\$[^(]*\(([^)]*)\),(\w)', data)
+        # S:G$name$scope({size}type),class,onstack,offset
+        m = re.match(r'G\$([^$]+)\$[^(]*\(\{(\d+)\}([^)]*)\),(\w)', data)
         if m:
             name = m.group(1)
+            size = int(m.group(2))
+            type_str = m.group(3)
+            sclass = m.group(4)
+            info = {'type': type_str, 'class': sclass, 'size': size}
             if name in self.symbols:
-                self.symbols[name]['type'] = m.group(2)
-                self.symbols[name]['class'] = m.group(3)
+                self.symbols[name].update(info)
+            else:
+                # S: comes before L: — stash for later
+                self._pending_syms[name] = info
 
     def _parse_function(self, data):
         m = re.match(r'G\$([^$]+)\$', data)
         if m:
             name = m.group(1)
             if name not in self.functions:
-                self.functions[name] = None  # address filled by L: record
+                self.functions[name] = None
 
     def get_source_line(self, addr):
         return self.addr_to_line.get(addr)
@@ -129,11 +184,45 @@ class CdbParser:
     def get_func_addr(self, name):
         return self.functions.get(name)
 
+    def get_func_at_addr(self, addr):
+        """Return function name containing code address, or None."""
+        for start, end, name in getattr(self, '_func_ranges', []):
+            if start <= addr < end:
+                return name
+        return None
+
+    def get_locals_for_func(self, func_name):
+        """Return dict of {varname: {'addr': int}} for a function."""
+        return {var: info for (func, var), info in self.locals.items() if func == func_name}
+
+    def get_user_globals(self):
+        """Return globals that are user variables (not SFRs/bits)."""
+        skip_classes = {'I', 'J'}  # I=SFR, J=bit-addressable SFR
+        skip_types = {'DF,'}  # function declarations
+        result = {}
+        for name, info in self.symbols.items():
+            cls = info.get('class', '')
+            typ = info.get('type', '')
+            if cls in skip_classes:
+                continue
+            if any(typ.startswith(s) for s in skip_types):
+                continue
+            # Skip if address is in SFR range (>=0x80 and it's a known SFR name)
+            addr = info.get('addr', 0)
+            if addr >= 0x80 and name in SFR_BY_NAME:
+                continue
+            result[name] = info
+        return result
+
     def load_source(self, filename):
         if filename in self.source_files:
             return self.source_files[filename]
-        for search_dir in ['.', 'examples/mcs51/blink', 'examples/mcs51/uart_hello',
-                           'examples/mcs51/timer_int', 'examples/mcs51/ext_int']:
+        search_dirs = [
+            self.cdb_dir, '.',
+            'examples/mcs51/blink', 'examples/mcs51/uart_hello',
+            'examples/mcs51/timer_int', 'examples/mcs51/ext_int',
+        ]
+        for search_dir in search_dirs:
             path = os.path.join(search_dir, filename)
             if os.path.exists(path):
                 with open(path) as f:

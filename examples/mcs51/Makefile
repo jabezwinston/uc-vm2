@@ -6,10 +6,10 @@ SDFLAGS = -mmcs51 --opt-code-size
 all: blink/main.ihx uart_hello/main.ihx timer_int/main.ihx ext_int/main.ihx
 
 blink/main.ihx: blink/main.c
-	$(SDCC) $(SDFLAGS) -o blink/ $<
+	$(SDCC) $(SDFLAGS) --debug -o blink/ $<
 
 uart_hello/main.ihx: uart_hello/main.c
-	$(SDCC) $(SDFLAGS) -o uart_hello/ $<
+	$(SDCC) $(SDFLAGS) --debug -o uart_hello/ $<
 
 timer_int/main.ihx: timer_int/main.c
 	$(SDCC) $(SDFLAGS) --debug -o timer_int/ $<

@@ -1,0 +1,118 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "AVR: Debug i2c_bare",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/examples/avr/i2c_bare/i2c_bare.elf",
+            "cwd": "${workspaceFolder}",
+            "MIMode": "gdb",
+            "miDebuggerPath": "/usr/bin/avr-gdb",
+            "miDebuggerServerAddress": "localhost:1234",
+            "stopAtEntry": true,
+            "preLaunchTask": "Start ucvm GDB (AVR - i2c_bare)",
+            "setupCommands": [
+                { "text": "set remotetimeout 5" }
+            ]
+        },
+        {
+            "name": "AVR: Debug test_program",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/tests/gdb/test_program.elf",
+            "cwd": "${workspaceFolder}",
+            "MIMode": "gdb",
+            "miDebuggerPath": "/usr/bin/avr-gdb",
+            "miDebuggerServerAddress": "localhost:1234",
+            "stopAtEntry": true,
+            "preLaunchTask": "Start ucvm GDB (AVR - test_program)",
+            "setupCommands": [
+                { "text": "set remotetimeout 5" }
+            ]
+        },
+        {
+            "name": "AVR: Debug on ESP32 (WiFi)",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/tests/gdb/test_program.elf",
+            "cwd": "${workspaceFolder}",
+            "MIMode": "gdb",
+            "miDebuggerPath": "/usr/bin/avr-gdb",
+            "miDebuggerServerAddress": "192.168.0.2:1234",
+            "stopAtEntry": true,
+            "setupCommands": [
+                { "text": "set remotetimeout 10" }
+            ]
+        },
+
+        {
+            "name": "8051: Debug blink",
+            "type": "8051",
+            "request": "launch",
+            "host": "localhost",
+            "port": 1234,
+            "cdbFile": "${workspaceFolder}/examples/mcs51/blink/main.cdb",
+            "sourceDirs": ["${workspaceFolder}/examples/mcs51/blink"],
+            "preLaunchTask": "Start ucvm GDB (8051 - blink)"
+        },
+        {
+            "name": "8051: Debug timer_int",
+            "type": "8051",
+            "request": "launch",
+            "host": "localhost",
+            "port": 1234,
+            "cdbFile": "${workspaceFolder}/examples/mcs51/timer_int/main.cdb",
+            "sourceDirs": ["${workspaceFolder}/examples/mcs51/timer_int"],
+            "preLaunchTask": "Start ucvm GDB (8051 - timer_int)"
+        },
+        {
+            "name": "8051: Debug uart_hello",
+            "type": "8051",
+            "request": "launch",
+            "host": "localhost",
+            "port": 1234,
+            "cdbFile": "${workspaceFolder}/examples/mcs51/uart_hello/main.cdb",
+            "sourceDirs": ["${workspaceFolder}/examples/mcs51/uart_hello"],
+            "preLaunchTask": "Start ucvm GDB (8051 - uart_hello)"
+        },
+        {
+            "name": "8051: Debug on ESP32 (WiFi)",
+            "type": "8051",
+            "request": "launch",
+            "host": "192.168.0.2",
+            "port": 1234,
+            "cdbFile": "${workspaceFolder}/examples/mcs51/blink/main.cdb",
+            "sourceDirs": ["${workspaceFolder}/examples/mcs51/blink"]
+        },
+
+        {
+            "name": "ucvm: Debug emulator (AVR)",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/ucvm",
+            "args": ["examples/avr/i2c_bare/i2c_bare.hex"],
+            "cwd": "${workspaceFolder}",
+            "MIMode": "gdb",
+            "miDebuggerPath": "/usr/bin/gdb",
+            "preLaunchTask": "Build ucvm",
+            "setupCommands": [
+                { "text": "break main" }
+            ]
+        },
+        {
+            "name": "ucvm: Debug emulator (8051)",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/ucvm",
+            "args": ["-a", "8051", "examples/mcs51/blink/main.ihx"],
+            "cwd": "${workspaceFolder}",
+            "MIMode": "gdb",
+            "miDebuggerPath": "/usr/bin/gdb",
+            "preLaunchTask": "Build ucvm",
+            "setupCommands": [
+                { "text": "break main" }
+            ]
+        }
+    ]
+}

@@ -127,7 +127,14 @@
       "WebFetch(domain:ww1.microchip.com)",
       "WebFetch(domain:github.com)",
       "Bash(arduino-cli board:*)",
-      "Bash(arduino-cli compile:*)"
+      "Bash(arduino-cli compile:*)",
+      "Bash(ls *.md)",
+      "Bash(grep -v 'A\\\\$\\\\|G\\\\$P[0-3]')",
+      "Bash(grep -E '^L:.*\\\\$\\(toggle_count|delay|main|i\\\\$\\)' examples/mcs51/timer_int/main.cdb)",
+      "Bash(grep -E '^S:G\\\\$\\(toggle_count|timer0_isr|main\\)' examples/mcs51/timer_int/main.cdb)",
+      "Bash(grep '^L:C\\\\$' examples/mcs51/timer_int/main.cdb)",
+      "Bash(grep -n 'toggle_count\\\\|^S:G\\\\$main\\\\|^L:G\\\\$main' examples/mcs51/timer_int/main.cdb)",
+      "Bash(echo \"exit: $?\")"
     ]
   }
 }

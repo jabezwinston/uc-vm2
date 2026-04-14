@@ -1,0 +1,131 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Build ucvm",
+            "type": "shell",
+            "command": "make -j$(nproc)",
+            "group": { "kind": "build", "isDefault": true },
+            "problemMatcher": "$gcc"
+        },
+        {
+            "label": "Build AVR example (i2c_bare)",
+            "type": "shell",
+            "command": "make -C examples/avr/i2c_bare",
+            "problemMatcher": "$gcc"
+        },
+        {
+            "label": "Build AVR example (uart_hello)",
+            "type": "shell",
+            "command": "make -C examples/avr/uart_hello",
+            "problemMatcher": "$gcc"
+        },
+        {
+            "label": "Build AVR GDB test program",
+            "type": "shell",
+            "command": "make -C tests/gdb",
+            "problemMatcher": "$gcc"
+        },
+        {
+            "label": "Build 8051 examples",
+            "type": "shell",
+            "command": "make examples51",
+            "problemMatcher": []
+        },
+        {
+            "label": "Build Arduino Wire example",
+            "type": "shell",
+            "command": "arduino-cli compile --fqbn arduino:avr:uno --output-dir examples/avr/i2c_wire examples/avr/i2c_wire/i2c_wire.ino",
+            "problemMatcher": []
+        },
+        {
+            "label": "Start ucvm GDB (AVR - i2c_bare)",
+            "type": "shell",
+            "command": "./ucvm -g 1234 examples/avr/i2c_bare/i2c_bare.hex",
+            "isBackground": true,
+            "dependsOn": ["Build ucvm", "Build AVR example (i2c_bare)"],
+            "problemMatcher": {
+                "pattern": { "regexp": "^$" },
+                "background": {
+                    "activeOnStart": true,
+                    "beginsPattern": "^ucvm:.*running",
+                    "endsPattern": "^ucvm:.*GDB connected"
+                }
+            }
+        },
+        {
+            "label": "Start ucvm GDB (AVR - test_program)",
+            "type": "shell",
+            "command": "./ucvm -g 1234 tests/gdb/test_program.hex",
+            "isBackground": true,
+            "dependsOn": ["Build ucvm", "Build AVR GDB test program"],
+            "problemMatcher": {
+                "pattern": { "regexp": "^$" },
+                "background": {
+                    "activeOnStart": true,
+                    "beginsPattern": "^ucvm:.*running",
+                    "endsPattern": "^ucvm:.*GDB connected"
+                }
+            }
+        },
+        {
+            "label": "Start ucvm GDB (8051 - blink)",
+            "type": "shell",
+            "command": "./ucvm -a 8051 -g 1234 examples/mcs51/blink/main.ihx",
+            "isBackground": true,
+            "dependsOn": ["Build ucvm", "Build 8051 examples"],
+            "problemMatcher": {
+                "pattern": { "regexp": "^$" },
+                "background": {
+                    "activeOnStart": true,
+                    "beginsPattern": "^ucvm:.*running",
+                    "endsPattern": "^ucvm:.*GDB connected"
+                }
+            }
+        },
+        {
+            "label": "Start ucvm GDB (8051 - timer_int)",
+            "type": "shell",
+            "command": "./ucvm -a 8051 -g 1234 examples/mcs51/timer_int/main.ihx",
+            "isBackground": true,
+            "dependsOn": ["Build ucvm", "Build 8051 examples"],
+            "problemMatcher": {
+                "pattern": { "regexp": "^$" },
+                "background": {
+                    "activeOnStart": true,
+                    "beginsPattern": "^ucvm:.*running",
+                    "endsPattern": "^ucvm:.*GDB connected"
+                }
+            }
+        },
+        {
+            "label": "Start ucvm GDB (8051 - uart_hello)",
+            "type": "shell",
+            "command": "./ucvm -a 8051 -g 1234 examples/mcs51/uart_hello/main.ihx",
+            "isBackground": true,
+            "dependsOn": ["Build ucvm", "Build 8051 examples"],
+            "problemMatcher": {
+                "pattern": { "regexp": "^$" },
+                "background": {
+                    "activeOnStart": true,
+                    "beginsPattern": "^ucvm:.*running",
+                    "endsPattern": "^ucvm:.*GDB connected"
+                }
+            }
+        },
+        {
+            "label": "Run AVR GDB tests",
+            "type": "shell",
+            "command": "python3 tests/gdb/test_gdb.py",
+            "dependsOn": ["Build ucvm", "Build AVR GDB test program"],
+            "problemMatcher": []
+        },
+        {
+            "label": "Run non-invasive tests",
+            "type": "shell",
+            "command": "python3 tests/gdb/test_noninvasive.py",
+            "dependsOn": ["Build ucvm", "Build AVR GDB test program"],
+            "problemMatcher": []
+        }
+    ]
+}
