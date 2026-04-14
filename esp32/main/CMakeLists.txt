@@ -1,5 +1,19 @@
 idf_component_register(
-    SRCS "main.c"
+    SRCS
+        "main.c"
+        "esp_io_bridge.c"
+        "esp_wifi_setup.c"
+        "esp_webserver.c"
     INCLUDE_DIRS "."
-    PRIV_REQUIRES ucvm spiffs nvs_flash driver
+    PRIV_REQUIRES
+        ucvm
+        spiffs
+        nvs_flash
+        esp_driver_gpio
+        esp_driver_uart
+        esp_wifi
+        esp_http_server
+        esp_netif
+        esp_event
+        esp_adc
 )

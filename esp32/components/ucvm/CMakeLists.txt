@@ -9,7 +9,6 @@ idf_component_register(
         "${UCVM_SRC_DIR}/periph/avr_gpio.c"
         "${UCVM_SRC_DIR}/periph/avr_uart.c"
         "${UCVM_SRC_DIR}/io/io_bridge.c"
-        "${UCVM_SRC_DIR}/gdb/gdb_stub.c"
         "${UCVM_SRC_DIR}/util/ihex.c"
         "${UCVM_VAR_DIR}/atmega328p.c"
         "${UCVM_VAR_DIR}/attiny85.c"
@@ -19,3 +18,6 @@ idf_component_register(
         spiffs
         nvs_flash
 )
+
+# GDB stub excluded — uses POSIX sockets, PC-only for now.
+# ESP32 GDB support can be added later via LWIP sockets or UART.

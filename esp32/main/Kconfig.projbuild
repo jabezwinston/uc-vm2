@@ -1,0 +1,15 @@
+menu "ucvm Configuration"
+
+    config UCVM_WIFI_SSID
+        string "WiFi SSID"
+        default "D-Link_DIR-615"
+        help
+            SSID of the WiFi network to connect to.
+
+    config UCVM_WIFI_PASS
+        string "WiFi Password"
+        default "local1234"
+        help
+            Password for the WiFi network.
+
+endmenu
