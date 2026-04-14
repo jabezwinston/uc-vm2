@@ -331,8 +331,7 @@ void app_main(void)
         if (!fw_loaded) cpu->state = AVR_STATE_HALTED;
         g_cpu = cpu;
 
-        if (bridge_config.num_entries > 0)
-            esp_bridge_init(cpu, &bridge_config);
+        g_cpu = cpu;
     }
 #endif
 
@@ -361,13 +360,17 @@ void app_main(void)
     if (!fw_loaded)
         ESP_LOGW(TAG, "No firmware — upload via web UI at http://%s/", wifi_get_ip());
 
-    /* 7. Web server */
+    /* 7. I/O bridge (shared for both architectures) */
+    if (bridge_config.num_entries > 0)
+        esp_bridge_init(g_cpu, (int)active_arch, &bridge_config);
+
+    /* 8. Web server */
     if (wifi_is_connected()) {
         if (webserver_start(g_cpu, active_arch, &bridge_config) == 0)
             ESP_LOGI(TAG, "Web server running at http://%s/", wifi_get_ip());
     }
 
-    /* 8. GDB stub */
+    /* 9. GDB stub */
     if (GDB_ENABLED && wifi_is_connected()) {
         int gdb_port = CONFIG_UCVM_GDB_PORT;
         const gdb_target_ops_t *ops = NULL;
@@ -384,17 +387,14 @@ void app_main(void)
         }
     }
 
-    /* 9. Emulation task on core 1 */
+    /* 10. Emulation task on core 1 */
     xTaskCreatePinnedToCore(emu_task, "emu", 4096, NULL,
                             configMAX_PRIORITIES - 1, NULL, 1);
     ESP_LOGI(TAG, "Emulation task pinned to core 1");
 
-    /* 10. Core 0: polling loop */
+    /* 11. Core 0: polling loop */
     while (1) {
-#ifdef CONFIG_UCVM_ENABLE_AVR
-        if (active_arch == ARCH_AVR)
-            esp_bridge_poll(g_cpu);
-#endif
+        esp_bridge_poll();
         if (g_gdb)
             gdb_poll(g_gdb);
         vTaskDelay(pdMS_TO_TICKS(5));

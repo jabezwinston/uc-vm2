@@ -20,6 +20,16 @@ mcs51_timer_t *mcs51_timer_init(mcs51_cpu_t *cpu);
 /* Tick Timer0 and Timer1 by one machine cycle */
 void mcs51_timer_tick(mcs51_cpu_t *cpu, mcs51_timer_t *timer);
 
+/* ========== GPIO ========== */
+
+typedef struct {
+    uint8_t ext_pins[4];    /* Externally driven pin values per port (P0-P3), default 0xFF */
+} mcs51_gpio_t;
+
+/* Init GPIO — registers SFR read hooks for P0-P3 that mix in ext_pins.
+ * Returns allocated gpio state stored in cpu->periph_gpio. */
+mcs51_gpio_t *mcs51_gpio_init(mcs51_cpu_t *cpu);
+
 /* ========== UART ========== */
 
 #define MCS51_UART_BUF_SIZE 32

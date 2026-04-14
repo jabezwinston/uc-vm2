@@ -27,6 +27,7 @@ if(CONFIG_UCVM_ENABLE_MCS51)
         "${UCVM_SRC_DIR}/mcs51/mcs51_decode.c"
         "${UCVM_SRC_DIR}/mcs51/mcs51_timer.c"
         "${UCVM_SRC_DIR}/mcs51/mcs51_uart.c"
+        "${UCVM_SRC_DIR}/mcs51/mcs51_gpio.c"
         "${UCVM_SRC_DIR}/mcs51/at89s52.c"
         "${UCVM_SRC_DIR}/gdb/gdb_target_mcs51.c"
     )

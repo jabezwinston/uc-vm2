@@ -119,7 +119,8 @@
       "Bash(sed -i 's|#include \"../src/mcs51/mcs51_cpu.h\"|#include \"../src/mcs51/mcs51_cpu.h\"|' pc/main_mcs51.c)",
       "Bash(timeout 3 ./ucvm -a 8051 -q examples/mcs51/uart_hello/main.ihx)",
       "Bash(timeout 2 ./ucvm -a 8051 examples/mcs51/blink/main.ihx)",
-      "Bash(./ucvm:*)"
+      "Bash(./ucvm:*)",
+      "Bash(ls examples/*/Makefile)"
     ]
   }
 }
