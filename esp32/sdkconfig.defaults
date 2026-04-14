@@ -13,6 +13,9 @@ CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 # FreeRTOS
 CONFIG_FREERTOS_HZ=1000
 
+# Task watchdog: don't watch CPU1 IDLE — core 1 is dedicated to the emu task
+CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1=n
+
 # WiFi
 CONFIG_ESP_WIFI_SSID="ucvm"
 CONFIG_ESP_WIFI_PASSWORD="ucvm1234"
