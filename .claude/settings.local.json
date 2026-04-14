@@ -61,7 +61,23 @@
       "Bash(timeout 2 ./ucvm examples/arduino/Button/build/Button.ino.hex)",
       "Bash(timeout 2 ./ucvm examples/arduino/ForLoopIteration/build/ForLoopIteration.ino.hex)",
       "Bash(timeout 4 ./ucvm examples/arduino/BlinkWithoutDelay/build/BlinkWithoutDelay.ino.hex)",
-      "Bash(tee /tmp/bwd_out.txt)"
+      "Bash(tee /tmp/bwd_out.txt)",
+      "Bash(avr-gdb --version)",
+      "Bash(./ucvm -g 1234 -q tests/gdb/test_program.hex)",
+      "Bash(avr-gdb -batch -ex 'set confirm off' -ex 'target remote :1234' -ex 'info reg' tests/gdb/test_program.elf)",
+      "Bash(kill %1)",
+      "Bash(wait)",
+      "Bash(avr-gdb -batch -ex 'set confirm off' -ex 'target remote :1234' -ex 'break main' -ex continue -ex 'print gdb_marker' -ex 'break *output_byte' -ex continue -ex 'print/x gdb_marker' -ex 'print/x g_u8' -ex 'print/x g_u16' -ex 'print/x g_u32' -ex 'print g_i8' -ex continue -ex 'print/x gdb_marker' -ex continue -ex 'print/x gdb_marker' -ex 'print g_sensor' -ex continue -ex 'print/x gdb_marker' -ex continue -ex 'print/x gdb_marker' -ex backtrace -ex detach tests/gdb/test_program.elf)",
+      "Bash(python3:*)",
+      "Bash(avr-nm -n tests/gdb/test_program.elf)",
+      "Bash(./ucvm -g 4322 -q tests/gdb/test_program.hex)",
+      "Bash(avr-gdb -batch -ex \"set confirm off\" -ex \"target remote :4322\" -ex \"break main\" -ex \"continue\" -ex \"break output_byte\" -ex \"continue\" -ex \"x/4xb 0x800103\" -ex \"x/1xw 0x800103\" -ex \"print/x g_u32\" -ex \"print sizeof\\(g_u32\\)\" -ex \"print/x &g_u32\" -ex \"detach\" tests/gdb/test_program.elf)",
+      "Bash(./ucvm -g 4323 -q tests/gdb/test_program.hex)",
+      "Bash(avr-gdb -batch -ex \"set confirm off\" -ex \"target remote :4323\" -ex \"break output_byte\" -ex \"continue\" -ex \"print g_u32\" -ex \"ptype g_u32\" -ex \"print \\(unsigned long\\)g_u32\" -ex \"print/x *\\(uint32_t*\\)\\(0x800103\\)\" -ex \"x/1xw 0x800103\" -ex \"detach\" tests/gdb/test_program.elf)",
+      "Bash(timeout 3 ./ucvm examples/uart_hello/uart_hello.hex)",
+      "Bash(timeout 2 /home/jw1/Git_repos/ucvm/ucvm -q /home/jw1/Git_repos/ucvm/examples/arduino/DigitalReadSerial/build/DigitalReadSerial.ino.hex)",
+      "Bash(timeout 2 /home/jw1/Git_repos/ucvm/ucvm -q /home/jw1/Git_repos/ucvm/examples/arduino/ASCIITable/build/ASCIITable.ino.hex)",
+      "Bash(timeout 2 /home/jw1/Git_repos/ucvm/ucvm -q /home/jw1/Git_repos/ucvm/examples/arduino/AnalogReadSerial/build/AnalogReadSerial.ino.hex)"
     ]
   }
 }

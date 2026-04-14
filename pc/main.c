@@ -224,6 +224,9 @@ int main(int argc, char *argv[])
             gdb_poll(gdb);
             if (gdb_should_stop(gdb))
                 break;
+            /* Wait for GDB to issue 'c' or 's' before running */
+            if (!gdb_is_running(gdb))
+                goto gdb_wait;
         }
 
         for (uint32_t i = 0; i < step_batch && running; i++) {
