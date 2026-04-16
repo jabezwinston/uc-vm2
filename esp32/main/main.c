@@ -238,12 +238,10 @@ static void emu_task(void *arg)
                     }
                 }
             } else {
-                /* No debugger: tight loop, no per-step checks */
+                /* No debugger: batched threaded execution */
 #ifdef CONFIG_UCVM_ENABLE_AVR
                 if (active_arch == ARCH_AVR) {
-                    avr_cpu_t *cpu = g_cpu;
-                    for (int i = 0; i < 50000 && cpu->state == AVR_STATE_RUNNING; i++)
-                        avr_cpu_step(cpu);
+                    avr_cpu_run(g_cpu, 500000);
                 }
 #endif
 #ifdef CONFIG_UCVM_ENABLE_MCS51

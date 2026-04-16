@@ -141,7 +141,12 @@
       "Bash(ls ~/esp/*/export.sh)",
       "Bash(timeout 15 cat /dev/ttyUSB1)",
       "Bash(fuser /dev/ttyUSB1)",
-      "Bash(bash *)"
+      "Bash(bash *)",
+      "Bash(timeout 3 ./ucvm examples/avr/blink/blink.hex -q)",
+      "Read(//tmp/**)",
+      "Bash(ls *)",
+      "Bash(stty -F /dev/ttyUSB1 115200 raw -echo)",
+      "Bash(timeout 10 cat /dev/ttyUSB1)"
     ]
   }
 }

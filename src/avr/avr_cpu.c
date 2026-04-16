@@ -72,6 +72,13 @@ avr_cpu_t *avr_cpu_init(const avr_variant_t *variant,
     cpu->flash      = flash;
     cpu->flash_size = flash_size;
 
+    /* Allocate decode cache (4 bytes per flash word) */
+    cpu->decode_cache = calloc(flash_size / 2, sizeof(avr_decoded_t));
+    if (!cpu->decode_cache) {
+        free(cpu);
+        return NULL;
+    }
+
     /* Register internal I/O handlers for SREG and SP */
     avr_io_register(cpu, IO_SREG, sreg_read, sreg_write, NULL);
     avr_io_register(cpu, IO_SPL,  spl_read,  spl_write,  NULL);
@@ -91,6 +98,7 @@ void avr_cpu_free(avr_cpu_t *cpu)
 {
     if (!cpu)
         return;
+    free(cpu->decode_cache);
     free(cpu->periph_timer);
     free(cpu->periph_gpio);
     free(cpu->periph_uart);
@@ -111,9 +119,14 @@ void avr_cpu_reset(avr_cpu_t *cpu)
     /* Clear data memory (registers + I/O + SRAM) */
     memset(cpu->data, 0, cpu->variant->data_size);
 
+    cpu->periph_accum = 0;
+
     /* Sync SP to data space */
     cpu->data[IO_SPL + IO_BASE] = cpu->sp & 0xFF;
     cpu->data[IO_SPH + IO_BASE] = (cpu->sp >> 8) & 0xFF;
+
+    /* Rebuild decode cache (flash may have changed) */
+    avr_predecode(cpu);
 }
 
 /* ---------- I/O handler registration ---------- */
@@ -258,33 +271,9 @@ void avr_cpu_check_irq(avr_cpu_t *cpu)
 
 /* ---------- CPU step ---------- */
 
-/* Peripheral tick interval — trades precision for speed.
- * 32 cycles at 16 MHz = 2 µs.  Timer prescaler minimums are
- * /1 (match every cycle) but real firmware rarely needs
- * sub-2µs timer accuracy. */
-#define PERIPH_TICK_INTERVAL 32
-
 AVR_HOT uint8_t avr_cpu_step(avr_cpu_t *cpu)
 {
-    if (cpu->state != AVR_STATE_RUNNING)
-        return 0;
-
-    uint8_t cycles = avr_decode_execute(cpu);
-    cpu->cycles += cycles;
-
-    /* Batch peripheral ticks — avoids 3 function calls per instruction */
-    cpu->periph_accum += cycles;
-    if (cpu->periph_accum >= PERIPH_TICK_INTERVAL) {
-        uint16_t elapsed = cpu->periph_accum;
-        cpu->periph_accum = 0;
-        if (cpu->periph_timer)
-            avr_timer0_tick(cpu, cpu->periph_timer, elapsed);
-        if (cpu->periph_twi)
-            avr_twi_tick(cpu, cpu->periph_twi, elapsed);
-        /* Inline IRQ check — skip function call when nothing pending */
-        if (cpu->irq_pending && (cpu->sreg & SREG_I))
-            avr_cpu_check_irq(cpu);
-    }
-
-    return cycles;
+    uint64_t before = cpu->cycles;
+    avr_cpu_run(cpu, 1);
+    return (uint8_t)(cpu->cycles - before);
 }

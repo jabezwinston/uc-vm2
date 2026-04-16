@@ -20,6 +20,71 @@
 /* Forward declaration */
 typedef struct avr_cpu avr_cpu_t;
 
+/* ---------- Pre-decoded instruction cache ---------- */
+
+/* Opcode handler IDs — one per distinct instruction form */
+enum avr_op {
+    /* Arithmetic (reg-reg) */
+    AVR_OP_ADD, AVR_OP_ADC, AVR_OP_SUB, AVR_OP_SBC,
+    AVR_OP_CP, AVR_OP_CPC, AVR_OP_CPSE,
+    /* Arithmetic (reg-imm) */
+    AVR_OP_SUBI, AVR_OP_SBCI, AVR_OP_CPI, AVR_OP_LDI,
+    /* Logic */
+    AVR_OP_AND, AVR_OP_OR, AVR_OP_EOR, AVR_OP_ANDI, AVR_OP_ORI,
+    /* Single-register */
+    AVR_OP_COM, AVR_OP_NEG, AVR_OP_SWAP,
+    AVR_OP_INC, AVR_OP_DEC,
+    AVR_OP_ASR, AVR_OP_LSR, AVR_OP_ROR,
+    /* Data transfer */
+    AVR_OP_MOV, AVR_OP_MOVW,
+    /* Word arithmetic */
+    AVR_OP_ADIW, AVR_OP_SBIW,
+    /* Multiply */
+    AVR_OP_MUL, AVR_OP_MULS, AVR_OP_MULSU,
+    AVR_OP_FMUL, AVR_OP_FMULS, AVR_OP_FMULSU,
+    /* IO */
+    AVR_OP_IN, AVR_OP_OUT,
+    AVR_OP_CBI, AVR_OP_SBI, AVR_OP_SBIC, AVR_OP_SBIS,
+    /* Branch */
+    AVR_OP_RJMP, AVR_OP_RCALL,
+    AVR_OP_JMP, AVR_OP_CALL,
+    AVR_OP_IJMP, AVR_OP_ICALL,
+    AVR_OP_RET, AVR_OP_RETI,
+    AVR_OP_BRBS, AVR_OP_BRBC,
+    /* Skip */
+    AVR_OP_SBRC, AVR_OP_SBRS,
+    /* Bit operations */
+    AVR_OP_BSET, AVR_OP_BCLR, AVR_OP_BST, AVR_OP_BLD,
+    /* Load */
+    AVR_OP_LDS,
+    AVR_OP_LD_X, AVR_OP_LD_XP, AVR_OP_LD_MX,
+    AVR_OP_LD_YP, AVR_OP_LD_MY, AVR_OP_LDD_Y,
+    AVR_OP_LD_ZP, AVR_OP_LD_MZ, AVR_OP_LDD_Z,
+    /* Store */
+    AVR_OP_STS,
+    AVR_OP_ST_X, AVR_OP_ST_XP, AVR_OP_ST_MX,
+    AVR_OP_ST_YP, AVR_OP_ST_MY, AVR_OP_STD_Y,
+    AVR_OP_ST_ZP, AVR_OP_ST_MZ, AVR_OP_STD_Z,
+    /* Stack */
+    AVR_OP_PUSH, AVR_OP_POP,
+    /* Program memory */
+    AVR_OP_LPM_R0, AVR_OP_LPM_RD, AVR_OP_LPM_RDP,
+    /* Misc */
+    AVR_OP_NOP, AVR_OP_SLEEP, AVR_OP_WDR, AVR_OP_BREAK, AVR_OP_SPM,
+    /* Invalid / 2nd word of 32-bit instruction */
+    AVR_OP_FAULT, AVR_OP_DATA,
+    AVR_OP_COUNT
+};
+
+/* Pre-decoded instruction: 4 bytes per flash word.
+ * a = primary operand (Rd, IO addr, bit mask, etc.)
+ * b = secondary operand (Rr, K8, absolute target PC, data addr, etc.) */
+typedef struct {
+    uint8_t  op;    /* enum avr_op */
+    uint8_t  a;
+    uint16_t b;
+} avr_decoded_t;
+
 /* ---------- Variant configuration ---------- */
 
 #define AVR_FLAG_HAS_MUL       0x01  /* MUL/MULS/MULSU/FMUL* */
@@ -103,6 +168,9 @@ struct avr_cpu {
     void *periph_uart;
     void *periph_twi;
 
+    /* Pre-decoded instruction cache (allocated at init, rebuilt on reset) */
+    avr_decoded_t *decode_cache;
+
     /* I/O bridge callback */
     io_bridge_cb_t bridge_cb;
     void *bridge_ctx;
@@ -154,6 +222,14 @@ void avr_cpu_reset(avr_cpu_t *cpu);
 /* Execute one instruction. Returns number of cycles consumed. */
 uint8_t avr_cpu_step(avr_cpu_t *cpu);
 
+/* Execute up to max_steps instructions in a tight loop.
+ * Returns total cycles consumed. Uses threaded dispatch on GCC/Clang. */
+uint32_t avr_cpu_run(avr_cpu_t *cpu, int max_steps);
+
+/* Pre-decode flash into decode cache. Called automatically by reset;
+ * call again after modifying flash contents at runtime. */
+void avr_predecode(avr_cpu_t *cpu);
+
 /* Check and dispatch pending interrupts. Called after each step. */
 void avr_cpu_check_irq(avr_cpu_t *cpu);
 
@@ -171,9 +247,6 @@ void avr_io_write(avr_cpu_t *cpu, uint8_t io_addr, uint8_t val);
 
 /* Flash read (byte-addressed, for LPM instruction) */
 uint8_t avr_flash_read_byte(avr_cpu_t *cpu, uint16_t byte_addr);
-
-/* Instruction decode+execute (called by avr_cpu_step) */
-uint8_t avr_decode_execute(avr_cpu_t *cpu);
 
 /* ---------- Variant descriptors (defined in variants/) ---------- */
 

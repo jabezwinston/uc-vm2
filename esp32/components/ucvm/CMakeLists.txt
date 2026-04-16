@@ -46,3 +46,6 @@ idf_component_register(
         nvs_flash
         lwip
 )
+
+# Override -Os with -O2 for emulation performance
+target_compile_options(${COMPONENT_LIB} PRIVATE -O2)

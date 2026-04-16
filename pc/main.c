@@ -213,37 +213,43 @@ static int run_avr(const char *variant_name, const char *hex_file,
             }
         }
 
-        for (uint32_t i = 0; i < step_batch && running; i++) {
-            if (cpu->state == AVR_STATE_HALTED ||
-                cpu->state == AVR_STATE_BREAK) {
-                if (gdb) {
-                    gdb_notify_stop(gdb, cpu->state);
-                    break;
+        if (cpu->state == AVR_STATE_RUNNING) {
+            if (!gdb) {
+                /* No debugger: batched threaded execution */
+                avr_cpu_run(cpu, step_batch);
+            } else {
+                /* GDB attached: per-step with breakpoint checks */
+                for (uint32_t i = 0; i < step_batch && running; i++) {
+                    if (cpu->state != AVR_STATE_RUNNING) {
+                        gdb_notify_stop(gdb, cpu->state);
+                        break;
+                    }
+                    if (gdb_check_breakpoint(gdb, cpu->pc)) {
+                        gdb_notify_stop(gdb, AVR_STATE_BREAK);
+                        break;
+                    }
+                    avr_cpu_step(cpu);
+                    if (gdb_is_single_stepping(gdb)) {
+                        gdb_notify_stop(gdb, AVR_STATE_RUNNING);
+                        break;
+                    }
                 }
-                running = 0;
-                break;
             }
+        } else if (cpu->state == AVR_STATE_SLEEPING) {
+            avr_cpu_check_irq(cpu);
             if (cpu->state == AVR_STATE_SLEEPING) {
+                cpu->cycles += 1;
+                if (cpu->periph_timer)
+                    avr_timer0_tick(cpu, cpu->periph_timer, 1);
                 avr_cpu_check_irq(cpu);
-                if (cpu->state == AVR_STATE_SLEEPING) {
-                    cpu->cycles += 1;
-                    if (cpu->periph_timer)
-                        avr_timer0_tick(cpu, cpu->periph_timer, 1);
-                    avr_cpu_check_irq(cpu);
-                }
-                continue;
             }
-
-            if (gdb && gdb_check_breakpoint(gdb, cpu->pc)) {
-                gdb_notify_stop(gdb, AVR_STATE_BREAK);
-                break;
-            }
-
-            avr_cpu_step(cpu);
-
-            if (gdb && gdb_is_single_stepping(gdb)) {
-                gdb_notify_stop(gdb, AVR_STATE_RUNNING);
-                break;
+        } else {
+            /* HALTED or BREAK */
+            if (gdb) {
+                gdb_notify_stop(gdb, cpu->state);
+                usleep(10000);
+            } else {
+                running = 0;
             }
         }
 
