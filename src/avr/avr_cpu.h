@@ -69,6 +69,8 @@ enum avr_op {
     AVR_OP_PUSH, AVR_OP_POP,
     /* Program memory */
     AVR_OP_LPM_R0, AVR_OP_LPM_RD, AVR_OP_LPM_RDP,
+    /* Fused instruction pairs (detected at predecode) */
+    AVR_OP_SUBI_BRNE, AVR_OP_DEC_BRNE,
     /* Misc */
     AVR_OP_NOP, AVR_OP_SLEEP, AVR_OP_WDR, AVR_OP_BREAK, AVR_OP_SPM,
     /* Invalid / 2nd word of 32-bit instruction */

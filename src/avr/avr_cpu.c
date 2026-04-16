@@ -125,8 +125,11 @@ void avr_cpu_reset(avr_cpu_t *cpu)
     cpu->data[IO_SPL + IO_BASE] = cpu->sp & 0xFF;
     cpu->data[IO_SPH + IO_BASE] = (cpu->sp >> 8) & 0xFF;
 
-    /* Rebuild decode cache (flash may have changed) */
+    /* Rebuild decode cache (flash may have changed).
+     * predecode halts the CPU to prevent races with emu_task;
+     * restore RUNNING state after it completes. */
     avr_predecode(cpu);
+    cpu->state = AVR_STATE_RUNNING;
 }
 
 /* ---------- I/O handler registration ---------- */

@@ -14,9 +14,29 @@
 #include "avr_periph.h"
 #include <string.h>
 
-/* Stack operations (defined in avr_cpu.c) */
-extern void avr_push(avr_cpu_t *cpu, uint8_t val);
-extern uint8_t avr_pop(avr_cpu_t *cpu);
+/* Stack operations — inlined to avoid function call overhead in hot handlers */
+#define IO_SPL  0x3D
+#define IO_SPH  0x3E
+#define IO_BASE 0x20
+
+static inline void avr_push_inline(avr_cpu_t *cpu, uint8_t val)
+{
+    if (cpu->sp >= cpu->variant->sram_start)
+        cpu->data[cpu->sp] = val;
+    cpu->sp--;
+    cpu->data[IO_SPL + IO_BASE] = cpu->sp & 0xFF;
+    cpu->data[IO_SPH + IO_BASE] = (cpu->sp >> 8) & 0xFF;
+}
+
+static inline uint8_t avr_pop_inline(avr_cpu_t *cpu)
+{
+    cpu->sp++;
+    cpu->data[IO_SPL + IO_BASE] = cpu->sp & 0xFF;
+    cpu->data[IO_SPH + IO_BASE] = (cpu->sp >> 8) & 0xFF;
+    if (cpu->sp < cpu->variant->data_size)
+        return cpu->data[cpu->sp];
+    return 0xFF;
+}
 
 /* ---------- SREG flag helpers ---------- */
 
@@ -114,6 +134,11 @@ void avr_predecode(avr_cpu_t *cpu)
     uint8_t vf = cpu->variant->flags;
 
     if (!cache) return;
+
+    /* Halt CPU first — avr_cpu_run checks state at periph tick
+     * boundaries, so it will exit within ~64 cycles. Caller
+     * (avr_cpu_reset) sets state back to RUNNING after we return. */
+    cpu->state = AVR_STATE_HALTED;
 
     for (uint32_t i = 0; i < num_words; i++) {
         uint16_t op = flash[i];
@@ -429,6 +454,18 @@ void avr_predecode(avr_cpu_t *cpu)
             break;
         }
     }
+
+    /* ---- Fusion pass: detect instruction pairs and merge ---- */
+    for (uint32_t i = 0; i + 1 < num_words; i++) {
+        uint8_t next_op = cache[i + 1].op;
+        /* BRNE = BRBC with bit mask == SREG_Z (0x02) */
+        if (next_op == AVR_OP_BRBC && cache[i + 1].a == SREG_Z) {
+            if (cache[i].op == AVR_OP_SUBI)
+                cache[i].op = AVR_OP_SUBI_BRNE;
+            else if (cache[i].op == AVR_OP_DEC)
+                cache[i].op = AVR_OP_DEC_BRNE;
+        }
+    }
 }
 
 /* ================================================================== */
@@ -485,8 +522,11 @@ static inline int avr_is_32bit(uint8_t op)
         avr_tick_peripherals(cpu); \
         pa = cpu->periph_accum; \
         pc = cpu->pc; /* IRQ may have redirected PC */ \
+        /* Re-check state — another core may have halted us */ \
+        if (__builtin_expect(cpu->state != AVR_STATE_RUNNING, 0)) \
+            goto done; \
     } \
-    if (__builtin_expect(--steps <= 0 || state != AVR_STATE_RUNNING, 0)) \
+    if (__builtin_expect(--steps <= 0, 0)) \
         goto done; \
     d = &cache[pc]; \
     goto *htab[d->op]; \
@@ -501,8 +541,9 @@ static inline int avr_is_32bit(uint8_t op)
         avr_tick_peripherals(cpu); \
         pa = cpu->periph_accum; \
         pc = cpu->pc; \
+        if (cpu->state != AVR_STATE_RUNNING) goto done; \
     } \
-    if (--steps <= 0 || state != AVR_STATE_RUNNING) \
+    if (--steps <= 0) \
         goto done; \
     break; \
 } while(0)
@@ -523,7 +564,6 @@ AVR_HOT uint32_t avr_cpu_run(avr_cpu_t *cpu, int max_steps)
     /* Hot locals — avoid struct reads in inner loop */
     uint16_t pc = cpu->pc;
     uint16_t pa = cpu->periph_accum;
-    uint8_t state = cpu->state;
 
 #if USE_THREADED
     static const void * const htab[AVR_OP_COUNT] = {
@@ -578,6 +618,8 @@ AVR_HOT uint32_t avr_cpu_run(avr_cpu_t *cpu, int max_steps)
         [AVR_OP_NOP]   = &&AVR_OP_NOP,   [AVR_OP_SLEEP] = &&AVR_OP_SLEEP,
         [AVR_OP_WDR]   = &&AVR_OP_WDR,   [AVR_OP_BREAK] = &&AVR_OP_BREAK,
         [AVR_OP_SPM]   = &&AVR_OP_SPM,
+        [AVR_OP_SUBI_BRNE] = &&AVR_OP_SUBI_BRNE,
+        [AVR_OP_DEC_BRNE]  = &&AVR_OP_DEC_BRNE,
         [AVR_OP_FAULT] = &&AVR_OP_FAULT,  [AVR_OP_DATA]  = &&AVR_OP_NOP,
     };
     /* Initial dispatch */
@@ -585,8 +627,8 @@ AVR_HOT uint32_t avr_cpu_run(avr_cpu_t *cpu, int max_steps)
     d = &cache[pc];
     goto *htab[d->op];
 #else
-    while (steps > 0 && state == AVR_STATE_RUNNING) {
-        if (pc >= flash_words) { state = AVR_STATE_HALTED; cpu->state = state; break; }
+    while (steps > 0) {
+        if (pc >= flash_words) { cpu->state = AVR_STATE_HALTED; break; }
         d = &cache[pc];
         switch (d->op) {
 #endif
@@ -667,8 +709,20 @@ AVR_HOT uint32_t avr_cpu_run(avr_cpu_t *cpu, int max_steps)
     }
 
     H(AVR_OP_SBCI) {
-        uint8_t Rd = AVR_R(cpu, d->a), K = (uint8_t)d->b;
+        uint8_t K = (uint8_t)d->b;
         uint8_t C = (cpu->sreg & SREG_C) ? 1 : 0;
+        if (K == 0 && C == 0) {
+            /* Fast path: R=Rd unchanged.  Only Z needs updating
+             * (AND with Rd==0).  H=V=C=0, N=Rd[7], S=N. */
+            uint8_t Rd = AVR_R(cpu, d->a);
+            uint8_t N = (Rd >> 7) & 1;
+            cpu->sreg = (cpu->sreg & (SREG_T | SREG_I))
+                | (N ? SREG_N : 0)
+                | ((cpu->sreg & SREG_Z) && (Rd == 0) ? SREG_Z : 0)
+                | (N ? SREG_S : 0);
+            pc++; NEXT(1);
+        }
+        uint8_t Rd = AVR_R(cpu, d->a);
         uint8_t R = Rd - K - C;
         AVR_R(cpu, d->a) = R;
         flags_sub(cpu, Rd, K, R, 1);
@@ -954,8 +1008,8 @@ AVR_HOT uint32_t avr_cpu_run(avr_cpu_t *cpu, int max_steps)
 
     H(AVR_OP_RCALL) {
         uint16_t ret = pc + 1;
-        avr_push(cpu, ret & 0xFF);
-        avr_push(cpu, (ret >> 8) & 0xFF);
+        avr_push_inline(cpu, ret & 0xFF);
+        avr_push_inline(cpu, (ret >> 8) & 0xFF);
         pc = d->b;
         NEXT(3);
     }
@@ -967,8 +1021,8 @@ AVR_HOT uint32_t avr_cpu_run(avr_cpu_t *cpu, int max_steps)
 
     H(AVR_OP_CALL) {
         uint16_t ret = pc + 2;  /* skip 2-word instruction */
-        avr_push(cpu, ret & 0xFF);
-        avr_push(cpu, (ret >> 8) & 0xFF);
+        avr_push_inline(cpu, ret & 0xFF);
+        avr_push_inline(cpu, (ret >> 8) & 0xFF);
         pc = d->b;
         NEXT(4);
     }
@@ -980,22 +1034,22 @@ AVR_HOT uint32_t avr_cpu_run(avr_cpu_t *cpu, int max_steps)
 
     H(AVR_OP_ICALL) {
         uint16_t ret = pc + 1;
-        avr_push(cpu, ret & 0xFF);
-        avr_push(cpu, (ret >> 8) & 0xFF);
+        avr_push_inline(cpu, ret & 0xFF);
+        avr_push_inline(cpu, (ret >> 8) & 0xFF);
         pc = AVR_Z(cpu);
         NEXT(3);
     }
 
     H(AVR_OP_RET) {
-        uint8_t pch = avr_pop(cpu);
-        uint8_t pcl = avr_pop(cpu);
+        uint8_t pch = avr_pop_inline(cpu);
+        uint8_t pcl = avr_pop_inline(cpu);
         pc = ((uint16_t)pch << 8) | pcl;
         NEXT(4);
     }
 
     H(AVR_OP_RETI) {
-        uint8_t pch = avr_pop(cpu);
-        uint8_t pcl = avr_pop(cpu);
+        uint8_t pch = avr_pop_inline(cpu);
+        uint8_t pcl = avr_pop_inline(cpu);
         pc = ((uint16_t)pch << 8) | pcl;
         cpu->sreg |= SREG_I;
         NEXT(4);
@@ -1062,6 +1116,33 @@ AVR_HOT uint32_t avr_cpu_run(avr_cpu_t *cpu, int max_steps)
         else
             AVR_R(cpu, d->a) &= ~(uint8_t)d->b;
         pc++; NEXT(1);
+    }
+
+    /* ---- Fused instruction pairs ---- */
+
+    H(AVR_OP_SUBI_BRNE) {
+        /* SUBI Rd,K + BRNE target — one dispatch instead of two */
+        uint8_t Rd = AVR_R(cpu, d->a), K = (uint8_t)d->b;
+        uint8_t R = Rd - K;
+        AVR_R(cpu, d->a) = R;
+        flags_sub(cpu, Rd, K, R, 0);
+        if (!(cpu->sreg & SREG_Z)) {
+            pc = cache[pc + 1].b; /* branch target from BRNE entry */
+            NEXT(3); /* SUBI(1) + BRNE taken(2) */
+        }
+        pc += 2; NEXT(2); /* SUBI(1) + BRNE not-taken(1) */
+    }
+
+    H(AVR_OP_DEC_BRNE) {
+        /* DEC Rd + BRNE target — one dispatch instead of two */
+        uint8_t R = AVR_R(cpu, d->a) - 1;
+        AVR_R(cpu, d->a) = R;
+        flags_dec(cpu, R);
+        if (!(cpu->sreg & SREG_Z)) {
+            pc = cache[pc + 1].b;
+            NEXT(3);
+        }
+        pc += 2; NEXT(2);
     }
 
     /* ---- Load ---- */
@@ -1197,12 +1278,12 @@ AVR_HOT uint32_t avr_cpu_run(avr_cpu_t *cpu, int max_steps)
     /* ---- Stack ---- */
 
     H(AVR_OP_PUSH) {
-        avr_push(cpu, AVR_R(cpu, d->a));
+        avr_push_inline(cpu, AVR_R(cpu, d->a));
         pc++; NEXT(2);
     }
 
     H(AVR_OP_POP) {
-        AVR_R(cpu, d->a) = avr_pop(cpu);
+        AVR_R(cpu, d->a) = avr_pop_inline(cpu);
         pc++; NEXT(2);
     }
 
@@ -1232,8 +1313,8 @@ AVR_HOT uint32_t avr_cpu_run(avr_cpu_t *cpu, int max_steps)
     }
 
     H(AVR_OP_SLEEP) {
-        state = AVR_STATE_SLEEPING;
-        cpu->state = state;
+        cpu->state = AVR_STATE_SLEEPING;
+        steps = 1; /* force exit at next NEXT */
         pc++; NEXT(1);
     }
 
@@ -1242,8 +1323,8 @@ AVR_HOT uint32_t avr_cpu_run(avr_cpu_t *cpu, int max_steps)
     }
 
     H(AVR_OP_BREAK) {
-        state = AVR_STATE_BREAK;
-        cpu->state = state;
+        cpu->state = AVR_STATE_BREAK;
+        steps = 1;
         pc++; NEXT(1);
     }
 
@@ -1252,15 +1333,13 @@ AVR_HOT uint32_t avr_cpu_run(avr_cpu_t *cpu, int max_steps)
     }
 
     H(AVR_OP_FAULT) {
-        state = AVR_STATE_HALTED;
-        cpu->state = state;
+        cpu->state = AVR_STATE_HALTED;
         goto done;
     }
 
 #if !USE_THREADED
         default:
-            state = AVR_STATE_HALTED;
-            cpu->state = state;
+            cpu->state = AVR_STATE_HALTED;
             goto done;
         } /* switch */
     } /* while */
