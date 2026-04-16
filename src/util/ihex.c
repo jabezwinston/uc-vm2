@@ -219,3 +219,136 @@ int ihex_load_bytes(const char *filename, uint8_t *buf, uint32_t buf_size)
     fclose(fp);
     return ret;
 }
+
+/* ================================================================
+ *  UCVM binary format — fast loading, no ASCII parsing
+ * ================================================================ */
+
+int ucfm_load(const char *filename, uint16_t *flash, uint32_t flash_words)
+{
+    FILE *fp = fopen(filename, "rb");
+    if (!fp) return -1;
+
+    ucfm_header_t hdr;
+    if (fread(&hdr, sizeof(hdr), 1, fp) != 1 ||
+        memcmp(hdr.magic, UCFM_MAGIC, 4) != 0) {
+        fclose(fp);
+        return -1;
+    }
+
+    for (int r = 0; r < hdr.range_count; r++) {
+        ucfm_range_t range;
+        if (fread(&range, sizeof(range), 1, fp) != 1) break;
+
+        /* Read raw data directly into flash */
+        uint32_t byte_offset = range.start_addr;
+        uint32_t remain = range.length;
+        uint8_t buf[256];
+        while (remain > 0) {
+            uint32_t chunk = remain < sizeof(buf) ? remain : sizeof(buf);
+            if (fread(buf, 1, chunk, fp) != chunk) break;
+            for (uint32_t i = 0; i < chunk; i++) {
+                uint32_t addr = byte_offset + i;
+                uint32_t word = addr >> 1;
+                if (word >= flash_words) continue;
+                if (addr & 1)
+                    flash[word] = (flash[word] & 0x00FF) | ((uint16_t)buf[i] << 8);
+                else
+                    flash[word] = (flash[word] & 0xFF00) | (uint16_t)buf[i];
+            }
+            byte_offset += chunk;
+            remain -= chunk;
+        }
+    }
+
+    fclose(fp);
+    return 0;
+}
+
+int ucfm_load_bytes(const char *filename, uint8_t *buf, uint32_t buf_size)
+{
+    FILE *fp = fopen(filename, "rb");
+    if (!fp) return -1;
+
+    ucfm_header_t hdr;
+    if (fread(&hdr, sizeof(hdr), 1, fp) != 1 ||
+        memcmp(hdr.magic, UCFM_MAGIC, 4) != 0) {
+        fclose(fp);
+        return -1;
+    }
+
+    for (int r = 0; r < hdr.range_count; r++) {
+        ucfm_range_t range;
+        if (fread(&range, sizeof(range), 1, fp) != 1) break;
+
+        uint32_t offset = range.start_addr;
+        uint32_t remain = range.length;
+        while (remain > 0) {
+            uint32_t chunk = remain < 256 ? remain : 256;
+            uint8_t tmp[256];
+            if (fread(tmp, 1, chunk, fp) != chunk) break;
+            for (uint32_t i = 0; i < chunk && (offset + i) < buf_size; i++)
+                buf[offset + i] = tmp[i];
+            offset += chunk;
+            remain -= chunk;
+        }
+    }
+
+    fclose(fp);
+    return 0;
+}
+
+int ucfm_save(const char *filename, const void *data, uint32_t size,
+              uint32_t start_addr, uint8_t flags)
+{
+    FILE *fp = fopen(filename, "wb");
+    if (!fp) return -1;
+
+    ucfm_header_t hdr = {0};
+    memcpy(hdr.magic, UCFM_MAGIC, 4);
+    hdr.range_count = 1;
+    hdr.flags = flags;
+    fwrite(&hdr, sizeof(hdr), 1, fp);
+
+    ucfm_range_t range = { .start_addr = start_addr, .length = size };
+    fwrite(&range, sizeof(range), 1, fp);
+    fwrite(data, 1, size, fp);
+
+    fclose(fp);
+    return 0;
+}
+
+/* ---- Auto-detect and load ---- */
+
+int fw_detect(const char *filename)
+{
+    /* Check extension first */
+    const char *dot = strrchr(filename, '.');
+    if (dot) {
+        if (strcmp(dot, ".bin") == 0) return 'b';
+        if (strcmp(dot, ".hex") == 0 || strcmp(dot, ".ihx") == 0) return 'h';
+    }
+    /* Peek at content */
+    FILE *fp = fopen(filename, "rb");
+    if (!fp) return -1;
+    uint8_t magic[4];
+    int n = fread(magic, 1, 4, fp);
+    fclose(fp);
+    if (n >= 4 && memcmp(magic, UCFM_MAGIC, 4) == 0) return 'b';
+    if (n >= 1 && magic[0] == ':') return 'h';
+    return -1;
+}
+
+int fw_load(const char *filename, uint16_t *flash, uint32_t flash_words)
+{
+    int fmt = fw_detect(filename);
+    if (fmt == 'b') return ucfm_load(filename, flash, flash_words);
+    return ihex_load(filename, flash, flash_words);
+}
+
+int fw_load_bytes(const char *filename, uint8_t *buf, uint32_t buf_size)
+{
+    int fmt = fw_detect(filename);
+    if (fmt == 'b') return ucfm_load_bytes(filename, buf, buf_size);
+    return ihex_load_bytes(filename, buf, buf_size);
+}

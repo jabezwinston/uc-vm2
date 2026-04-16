@@ -7,6 +7,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include "../io/io_bridge.h"
 
 typedef struct mcs51_cpu mcs51_cpu_t;
 
@@ -108,9 +109,6 @@ enum {
 /* Number of interrupt sources */
 #define MCS51_NUM_INTERRUPTS 6
 
-/* I/O bridge callback (shared with AVR) */
-typedef void (*mcs51_bridge_cb_t)(void *ctx, uint8_t type, uint8_t resource, uint8_t value);
-
 /* SFR hook callbacks */
 typedef void    (*sfr_write_fn)(mcs51_cpu_t *cpu, uint8_t addr, uint8_t val, void *ctx);
 typedef uint8_t (*sfr_read_fn)(mcs51_cpu_t *cpu, uint8_t addr, void *ctx);
@@ -156,7 +154,7 @@ struct mcs51_cpu {
     void *periph_intc;
 
     /* I/O bridge */
-    mcs51_bridge_cb_t bridge_cb;
+    io_bridge_cb_t bridge_cb;
     void *bridge_ctx;
 
     const mcs51_variant_t *variant;

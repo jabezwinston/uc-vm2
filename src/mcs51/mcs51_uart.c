@@ -12,8 +12,6 @@
 #include "mcs51_cpu.h"
 #include <stdlib.h>
 
-#define IO_BRIDGE_UART 2
-
 static inline int ring_empty(uint8_t h, uint8_t t) { return h == t; }
 static inline int ring_full(uint8_t h, uint8_t t) { return ((h + 1) & (MCS51_UART_BUF_SIZE - 1)) == t; }
 
@@ -35,7 +33,7 @@ static void sbuf_write(mcs51_cpu_t *cpu, uint8_t addr, uint8_t val, void *ctx)
 
     /* Fire bridge callback immediately for console output */
     if (cpu->bridge_cb)
-        cpu->bridge_cb(cpu->bridge_ctx, IO_BRIDGE_UART, 0, val);
+        cpu->bridge_cb(cpu->bridge_ctx, IO_PERIPH_UART, 0, val);
 }
 
 /* SFR read hook for SBUF (RX) */

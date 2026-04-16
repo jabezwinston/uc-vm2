@@ -25,8 +25,8 @@ gdb_state_t *gdb_init(void *cpu, const gdb_target_ops_t *ops, int port);
 gdb_state_t *gdb_init_avr(void *cpu, const uint16_t *flash,
                             uint32_t flash_words, int port);
 
-void gdb_wait_connect(gdb_state_t *gdb);
 void gdb_poll(gdb_state_t *gdb);
+int gdb_has_client(gdb_state_t *gdb);
 int gdb_is_running(gdb_state_t *gdb);
 int gdb_is_single_stepping(gdb_state_t *gdb);
 int gdb_check_breakpoint(gdb_state_t *gdb, uint16_t pc);

@@ -89,8 +89,8 @@ static void cpu_step(void)
 static uint16_t flash_buf[MAX_FLASH_WORDS];
 #endif
 
-/* I/O bridge config */
-static io_bridge_config_t bridge_config;
+/* I/O bridge */
+static io_bridge_t bridge;
 
 /* GDB state */
 static gdb_state_t *g_gdb = NULL;
@@ -112,21 +112,21 @@ static gdb_state_t *g_gdb = NULL;
 
 /* ---------- NVS Config Storage ---------- */
 
-int esp_config_save(const io_bridge_config_t *config)
+int esp_config_save(const io_bridge_t *br)
 {
     uint8_t buf[256];
-    int len = io_bridge_serialize(config, buf, sizeof(buf));
+    int len = io_bridge_serialize(br, buf, sizeof(buf));
     if (len < 0) return -1;
     nvs_handle_t nvs;
     if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs) != ESP_OK) return -1;
     esp_err_t err = nvs_set_blob(nvs, NVS_KEY_BRIDGE, buf, len);
     if (err == ESP_OK) nvs_commit(nvs);
     nvs_close(nvs);
-    ESP_LOGI(TAG, "Bridge config saved (%d bytes, %d entries)", len, config->num_entries);
+    ESP_LOGI(TAG, "Bridge config saved (%d bytes, %d entries)", len, br->num_entries);
     return (err == ESP_OK) ? 0 : -1;
 }
 
-static int esp_config_load(io_bridge_config_t *config)
+static int esp_config_load(io_bridge_t *br)
 {
     nvs_handle_t nvs;
     if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs) != ESP_OK) return -1;
@@ -135,8 +135,8 @@ static int esp_config_load(io_bridge_config_t *config)
     esp_err_t err = nvs_get_blob(nvs, NVS_KEY_BRIDGE, buf, &len);
     nvs_close(nvs);
     if (err != ESP_OK) return -1;
-    if (io_bridge_parse(buf, len, config) != 0) return -1;
-    ESP_LOGI(TAG, "Bridge config loaded (%d entries)", config->num_entries);
+    if (io_bridge_parse(buf, len, br) != 0) return -1;
+    ESP_LOGI(TAG, "Bridge config loaded (%d entries)", br->num_entries);
     return 0;
 }
 
@@ -214,7 +214,9 @@ static void emu_task(void *arg)
              xPortGetCoreID(), active_arch == ARCH_AVR ? "AVR" : "8051");
 
     while (1) {
-        if (g_gdb && !gdb_is_running(g_gdb)) {
+        /* Only halt when a GDB client is connected and has paused us.
+         * Without a client, the CPU runs freely (web-only usage). */
+        if (g_gdb && gdb_has_client(g_gdb) && !gdb_is_running(g_gdb)) {
             vTaskDelay(pdMS_TO_TICKS(10));
             continue;
         }
@@ -222,23 +224,40 @@ static void emu_task(void *arg)
         uint8_t state = cpu_get_state();
 
         if (state == 0 /* RUNNING */) {
-            for (int i = 0; i < 1000; i++) {
-                if (cpu_get_state() != 0)
-                    break;
-                if (g_gdb && gdb_check_breakpoint(g_gdb, cpu_get_pc())) {
-                    gdb_notify_stop(g_gdb, 3);
-                    break;
+            int debugging = g_gdb && gdb_has_client(g_gdb);
+            if (debugging) {
+                /* GDB attached: check breakpoints every step */
+                for (int i = 0; i < 50000; i++) {
+                    if (cpu_get_state() != 0) break;
+                    if (gdb_check_breakpoint(g_gdb, cpu_get_pc())) {
+                        gdb_notify_stop(g_gdb, 3); break;
+                    }
+                    cpu_step();
+                    if (gdb_is_single_stepping(g_gdb)) {
+                        gdb_notify_stop(g_gdb, 0); break;
+                    }
                 }
-                cpu_step();
-                if (g_gdb && gdb_is_single_stepping(g_gdb)) {
-                    gdb_notify_stop(g_gdb, 0);
-                    break;
+            } else {
+                /* No debugger: tight loop, no per-step checks */
+#ifdef CONFIG_UCVM_ENABLE_AVR
+                if (active_arch == ARCH_AVR) {
+                    avr_cpu_t *cpu = g_cpu;
+                    for (int i = 0; i < 50000 && cpu->state == AVR_STATE_RUNNING; i++)
+                        avr_cpu_step(cpu);
                 }
+#endif
+#ifdef CONFIG_UCVM_ENABLE_MCS51
+                if (active_arch == ARCH_MCS51) {
+                    mcs51_cpu_t *cpu = g_cpu;
+                    for (int i = 0; i < 50000 && cpu->state == MCS51_STATE_RUNNING; i++)
+                        mcs51_cpu_step(cpu);
+                }
+#endif
             }
             state = cpu_get_state();
-            if (g_gdb && (state == 2 || state == 3))
+            if (debugging && (state == 2 || state == 3))
                 gdb_notify_stop(g_gdb, state);
-            taskYIELD();
+            vTaskDelay(1);  /* let IDLE1 run to feed watchdog */
 
         } else if (state == 1 /* SLEEPING */) {
 #ifdef CONFIG_UCVM_ENABLE_AVR
@@ -294,10 +313,25 @@ void app_main(void)
     ESP_LOGI(TAG, "Architecture: %s, Variant: %s",
              active_arch == ARCH_AVR ? "AVR" : "8051", variant_name);
 
-    /* 4. Bridge config from NVS */
-    memset(&bridge_config, 0, sizeof(bridge_config));
-    if (esp_config_load(&bridge_config) != 0)
-        ESP_LOGI(TAG, "Using empty bridge config");
+    /* 4. Bridge init + config from NVS (or defaults) */
+    const io_mcu_ops_t *mcu_ops = (active_arch == ARCH_AVR)
+                                   ? &avr_mcu_ops : &mcs51_mcu_ops;
+    io_bridge_init(&bridge, NULL, mcu_ops);
+    if (esp_config_load(&bridge) != 0) {
+        ESP_LOGI(TAG, "No saved config — loading defaults");
+        /* MCU UART 0 -> ESP32 UART0 (console) */
+        io_bridge_entry_t uart_entry = {
+            .mcu_periph = IO_PERIPH_UART, .mcu_index = 0,
+            .host_type  = IO_HOST_UART,   .host_index = 0,
+        };
+        io_bridge_add(&bridge, &uart_entry);
+        /* MCU GPIO B.5 (Arduino pin 13) -> ESP32 GPIO 2 (onboard LED) */
+        io_bridge_entry_t led_entry = {
+            .mcu_periph = IO_PERIPH_GPIO, .mcu_index = 0, .mcu_pin = 5,
+            .host_type  = IO_HOST_GPIO,   .host_index = 2,
+        };
+        io_bridge_add(&bridge, &led_entry);
+    }
 
     /* 5. WiFi */
     ESP_LOGI(TAG, "Starting WiFi...");
@@ -321,7 +355,7 @@ void app_main(void)
         uint32_t flash_words = variant->flash_size / 2;
         if (flash_words > MAX_FLASH_WORDS) flash_words = MAX_FLASH_WORDS;
 
-        if (ihex_load("/firmware/avr.hex", flash_buf, flash_words) == 0) {
+        if (fw_load("/firmware/avr.hex", flash_buf, flash_words) == 0) {
             ESP_LOGI(TAG, "Firmware loaded from /firmware/avr.hex");
             fw_loaded = 1;
         }
@@ -329,8 +363,6 @@ void app_main(void)
         avr_cpu_t *cpu = avr_cpu_init(variant, flash_buf, variant->flash_size);
         if (!cpu) { ESP_LOGE(TAG, "CPU init failed"); return; }
         if (!fw_loaded) cpu->state = AVR_STATE_HALTED;
-        g_cpu = cpu;
-
         g_cpu = cpu;
     }
 #endif
@@ -344,7 +376,7 @@ void app_main(void)
         if (!cpu) { ESP_LOGE(TAG, "CPU init failed"); return; }
 
         memset(cpu->code, 0xFF, cpu->code_size);
-        if (ihex_load_bytes("/firmware/mcs51.ihx", cpu->code, cpu->code_size) == 0) {
+        if (fw_load_bytes("/firmware/mcs51.ihx", cpu->code, cpu->code_size) == 0) {
             ESP_LOGI(TAG, "Firmware loaded from /firmware/mcs51.ihx");
             fw_loaded = 1;
         }
@@ -360,13 +392,15 @@ void app_main(void)
     if (!fw_loaded)
         ESP_LOGW(TAG, "No firmware — upload via web UI at http://%s/", wifi_get_ip());
 
-    /* 7. I/O bridge (shared for both architectures) */
-    if (bridge_config.num_entries > 0)
-        esp_bridge_init(g_cpu, (int)active_arch, &bridge_config);
+    /* Update bridge with CPU reference */
+    bridge.cpu = g_cpu;
+
+    /* 7. I/O bridge — always init to install callback */
+    esp_bridge_init(&bridge);
 
     /* 8. Web server */
     if (wifi_is_connected()) {
-        if (webserver_start(g_cpu, active_arch, &bridge_config) == 0)
+        if (webserver_start(&bridge) == 0)
             ESP_LOGI(TAG, "Web server running at http://%s/", wifi_get_ip());
     }
 
@@ -394,9 +428,9 @@ void app_main(void)
 
     /* 11. Core 0: polling loop */
     while (1) {
-        esp_bridge_poll();
+        esp_bridge_poll(&bridge);
         if (g_gdb)
             gdb_poll(g_gdb);
-        vTaskDelay(pdMS_TO_TICKS(5));
+        vTaskDelay(1);
     }
 }

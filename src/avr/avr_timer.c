@@ -59,7 +59,7 @@ avr_timer0_t *avr_timer0_init(avr_cpu_t *cpu, const avr_timer0_config_t *config)
     return t;
 }
 
-void avr_timer0_tick(avr_cpu_t *cpu, avr_timer0_t *timer, uint8_t elapsed)
+AVR_HOT void avr_timer0_tick(avr_cpu_t *cpu, avr_timer0_t *timer, uint16_t elapsed)
 {
     const avr_timer0_config_t *cfg = timer->config;
 

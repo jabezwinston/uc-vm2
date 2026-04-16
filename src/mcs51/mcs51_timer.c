@@ -14,9 +14,6 @@
 #include "mcs51_cpu.h"
 #include <stdlib.h>
 
-/* I/O bridge type for UART */
-#define IO_BRIDGE_UART 2
-
 /* Timer0 tick — returns 1 if overflow occurred */
 static int tick_timer(mcs51_cpu_t *cpu, int timer_num)
 {

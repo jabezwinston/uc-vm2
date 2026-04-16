@@ -360,7 +360,7 @@ avr_twi_t *avr_twi_init(avr_cpu_t *cpu, const avr_twi_config_t *config)
     return twi;
 }
 
-void avr_twi_tick(avr_cpu_t *cpu, avr_twi_t *twi, uint8_t cycles)
+void avr_twi_tick(avr_cpu_t *cpu, avr_twi_t *twi, uint16_t cycles)
 {
     if (twi->pending_op == TWI_OP_NONE || twi->cycles_remaining == 0)
         return;

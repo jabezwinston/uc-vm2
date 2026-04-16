@@ -57,7 +57,7 @@ typedef struct {
 avr_timer0_t *avr_timer0_init(avr_cpu_t *cpu, const avr_timer0_config_t *config);
 
 /* Tick Timer0 by elapsed CPU cycles */
-void avr_timer0_tick(avr_cpu_t *cpu, avr_timer0_t *timer, uint8_t cycles);
+void avr_timer0_tick(avr_cpu_t *cpu, avr_timer0_t *timer, uint16_t elapsed);
 
 /* ========== GPIO ========== */
 
@@ -180,7 +180,7 @@ enum {
 avr_twi_t *avr_twi_init(avr_cpu_t *cpu, const avr_twi_config_t *config);
 
 /* Tick TWI by elapsed CPU cycles — call from cpu_step */
-void avr_twi_tick(avr_cpu_t *cpu, avr_twi_t *twi, uint8_t cycles);
+void avr_twi_tick(avr_cpu_t *cpu, avr_twi_t *twi, uint16_t elapsed);
 
 /* Attach/detach an I2C bus (for ESP32 bridge or virtual slave) */
 void avr_twi_set_bus(avr_twi_t *twi, avr_twi_bus_t *bus);

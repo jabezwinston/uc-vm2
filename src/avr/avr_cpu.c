@@ -130,7 +130,7 @@ void avr_io_register(avr_cpu_t *cpu, uint8_t io_addr,
 
 /* ---------- Memory access ---------- */
 
-uint8_t avr_io_read(avr_cpu_t *cpu, uint8_t io_addr)
+AVR_HOT uint8_t avr_io_read(avr_cpu_t *cpu, uint8_t io_addr)
 {
     if (io_addr < AVR_IO_MAX && cpu->io_read[io_addr])
         return cpu->io_read[io_addr](cpu, io_addr, cpu->io_ctx[io_addr]);
@@ -138,7 +138,7 @@ uint8_t avr_io_read(avr_cpu_t *cpu, uint8_t io_addr)
     return cpu->data[io_addr + IO_BASE];
 }
 
-void avr_io_write(avr_cpu_t *cpu, uint8_t io_addr, uint8_t val)
+AVR_HOT void avr_io_write(avr_cpu_t *cpu, uint8_t io_addr, uint8_t val)
 {
     /* Always store to data space */
     cpu->data[io_addr + IO_BASE] = val;
@@ -146,7 +146,7 @@ void avr_io_write(avr_cpu_t *cpu, uint8_t io_addr, uint8_t val)
         cpu->io_write[io_addr](cpu, io_addr, val, cpu->io_ctx[io_addr]);
 }
 
-uint8_t avr_data_read(avr_cpu_t *cpu, uint16_t addr)
+AVR_HOT uint8_t avr_data_read(avr_cpu_t *cpu, uint16_t addr)
 {
     if (addr < 0x20) {
         /* Register file: direct access */
@@ -165,7 +165,7 @@ uint8_t avr_data_read(avr_cpu_t *cpu, uint16_t addr)
     return 0xFF; /* unmapped reads return 0xFF */
 }
 
-void avr_data_write(avr_cpu_t *cpu, uint16_t addr, uint8_t val)
+AVR_HOT void avr_data_write(avr_cpu_t *cpu, uint16_t addr, uint8_t val)
 {
     if (addr < 0x20) {
         /* Register file: direct write */
@@ -198,7 +198,7 @@ uint8_t avr_flash_read_byte(avr_cpu_t *cpu, uint16_t byte_addr)
 
 /* ---------- Stack operations ---------- */
 
-void avr_push(avr_cpu_t *cpu, uint8_t val)
+AVR_HOT void avr_push(avr_cpu_t *cpu, uint8_t val)
 {
     if (cpu->sp >= cpu->variant->sram_start)
         cpu->data[cpu->sp] = val;
@@ -208,7 +208,7 @@ void avr_push(avr_cpu_t *cpu, uint8_t val)
     cpu->data[IO_SPH + IO_BASE] = (cpu->sp >> 8) & 0xFF;
 }
 
-uint8_t avr_pop(avr_cpu_t *cpu)
+AVR_HOT uint8_t avr_pop(avr_cpu_t *cpu)
 {
     cpu->sp++;
     /* Sync SP to I/O registers */
@@ -258,29 +258,33 @@ void avr_cpu_check_irq(avr_cpu_t *cpu)
 
 /* ---------- CPU step ---------- */
 
-uint8_t avr_cpu_step(avr_cpu_t *cpu)
+/* Peripheral tick interval — trades precision for speed.
+ * 32 cycles at 16 MHz = 2 µs.  Timer prescaler minimums are
+ * /1 (match every cycle) but real firmware rarely needs
+ * sub-2µs timer accuracy. */
+#define PERIPH_TICK_INTERVAL 32
+
+AVR_HOT uint8_t avr_cpu_step(avr_cpu_t *cpu)
 {
     if (cpu->state != AVR_STATE_RUNNING)
         return 0;
 
-    uint16_t old_pc = cpu->pc;
     uint8_t cycles = avr_decode_execute(cpu);
     cpu->cycles += cycles;
 
-    if (cpu->state == AVR_STATE_HALTED) {
-        uint16_t opcode = (old_pc < cpu->flash_size / 2) ? cpu->flash[old_pc] : 0xFFFF;
-        fprintf(stderr, "HALT: PC=0x%04X opcode=0x%04X cycles=%llu SP=0x%04X SREG=0x%02X\n",
-                old_pc, opcode, (unsigned long long)cpu->cycles, cpu->sp, cpu->sreg);
+    /* Batch peripheral ticks — avoids 3 function calls per instruction */
+    cpu->periph_accum += cycles;
+    if (cpu->periph_accum >= PERIPH_TICK_INTERVAL) {
+        uint16_t elapsed = cpu->periph_accum;
+        cpu->periph_accum = 0;
+        if (cpu->periph_timer)
+            avr_timer0_tick(cpu, cpu->periph_timer, elapsed);
+        if (cpu->periph_twi)
+            avr_twi_tick(cpu, cpu->periph_twi, elapsed);
+        /* Inline IRQ check — skip function call when nothing pending */
+        if (cpu->irq_pending && (cpu->sreg & SREG_I))
+            avr_cpu_check_irq(cpu);
     }
-
-    /* Tick peripherals */
-    if (cpu->periph_timer)
-        avr_timer0_tick(cpu, cpu->periph_timer, cycles);
-    if (cpu->periph_twi)
-        avr_twi_tick(cpu, cpu->periph_twi, cycles);
-
-    /* Check for pending interrupts */
-    avr_cpu_check_irq(cpu);
 
     return cycles;
 }

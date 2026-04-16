@@ -1,23 +1,17 @@
 /*
  * AVR Blink - ATMega328P
- * Toggles PB5 (Arduino pin 13) with a delay loop.
+ * Toggles PB5 (Arduino pin 13) every 500ms.
  */
 #include <avr/io.h>
-
-static void delay(void)
-{
-    for (volatile uint32_t i = 0; i < 50000; i++)
-        ;
-}
+#include <util/delay.h>
 
 int main(void)
 {
-    /* Set PB5 as output */
     DDRB |= (1 << PB5);
 
     while (1) {
         PORTB ^= (1 << PB5);
-        delay();
+        _delay_ms(500);
     }
 
     return 0;

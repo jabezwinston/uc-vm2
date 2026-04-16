@@ -22,6 +22,7 @@ AVR_SRCS = src/avr/avr_cpu.c \
            src/avr/avr_uart.c \
            src/avr/avr_twi.c \
            src/avr/avr_twi_slave.c \
+           src/avr/avr_mcu_ops.c \
            src/avr/atmega328p.c \
            src/avr/attiny85.c
 
@@ -31,6 +32,7 @@ MCS51_SRCS = src/mcs51/mcs51_cpu.c \
              src/mcs51/mcs51_timer.c \
              src/mcs51/mcs51_uart.c \
              src/mcs51/mcs51_gpio.c \
+             src/mcs51/mcs51_mcu_ops.c \
              src/mcs51/at89s52.c
 
 # ---- Unified binary (AVR + 8051) ----

@@ -1,34 +1,27 @@
 /*
  * ucvm - ESP32 I/O Bridge Backends
  *
- * Maps emulated MCU peripheral resources to ESP32 hardware.
- * Architecture-neutral: works with both AVR and 8051.
- *
- *   GPIO: MCU port pins → ESP32 GPIO pins (input/output, ISR)
- *   UART: MCU USART → ESP32 HW UART
- *   ADC:  MCU ADC channels → ESP32 ADC oneshot reads
+ * Opens ESP32 hardware (GPIO, UART, ADC, I2C) for each bridge entry
+ * and routes data between the emulated MCU and host peripherals.
+ * Architecture-neutral — all MCU access via bridge->mcu_ops.
  */
 #ifndef ESP_IO_BRIDGE_H
 #define ESP_IO_BRIDGE_H
 
 #include "src/io/io_bridge.h"
-#include <stdint.h>
 
-/* Architecture IDs (match main.c ARCH_AVR/ARCH_MCS51) */
-#define ESP_BRIDGE_ARCH_AVR   0
-#define ESP_BRIDGE_ARCH_MCS51 1
+/* Open host resources for all entries and install bridge callback. */
+void esp_bridge_init(io_bridge_t *br);
 
-/* Initialize all ESP32 I/O bridge backends from a bridge config.
- * cpu: opaque pointer (avr_cpu_t* or mcs51_cpu_t*)
- * arch: ESP_BRIDGE_ARCH_AVR or ESP_BRIDGE_ARCH_MCS51
- * Configures GPIO, UART, ADC and installs the bridge callback on the CPU. */
-void esp_bridge_init(void *cpu, int arch, const io_bridge_config_t *config);
+/* Close all host resources. */
+void esp_bridge_deinit(io_bridge_t *br);
 
-/* Tear down all bridge backends */
-void esp_bridge_deinit(void);
-
-/* Poll bridge inputs and drain UART TX.
+/* Poll host→MCU data transfer (UART RX, GPIO input, etc.).
  * Called periodically from core 0. */
-void esp_bridge_poll(void);
+void esp_bridge_poll(io_bridge_t *br);
+
+/* Close the host resource handle for entry at index.
+ * Call before io_bridge_remove() so the handle is cleaned up. */
+void esp_bridge_close_entry(int index);
 
 #endif /* ESP_IO_BRIDGE_H */

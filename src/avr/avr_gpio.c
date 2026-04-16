@@ -10,9 +10,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* I/O bridge types (from io_bridge.h) */
-#define IO_BRIDGE_GPIO 1
-
 /* ---------- I/O handlers ---------- */
 
 static uint8_t pin_read(avr_cpu_t *cpu, uint8_t io_addr, void *ctx)
@@ -43,7 +40,7 @@ static void pin_write(avr_cpu_t *cpu, uint8_t io_addr, uint8_t val, void *ctx)
             cpu->data[io_addr + 0x20] = 0;
             /* Trigger bridge callback */
             if (cpu->bridge_cb) {
-                cpu->bridge_cb(cpu->bridge_ctx, IO_BRIDGE_GPIO,
+                cpu->bridge_cb(cpu->bridge_ctx, IO_PERIPH_GPIO,
                                gpio->ports[i].port_id,
                                cpu->data[port_io + 0x20]);
             }
@@ -65,7 +62,7 @@ static void port_write(avr_cpu_t *cpu, uint8_t io_addr, uint8_t val, void *ctx)
     for (uint8_t i = 0; i < gpio->num_ports; i++) {
         if (gpio->ports[i].port_io == io_addr) {
             if (cpu->bridge_cb) {
-                cpu->bridge_cb(cpu->bridge_ctx, IO_BRIDGE_GPIO,
+                cpu->bridge_cb(cpu->bridge_ctx, IO_PERIPH_GPIO,
                                gpio->ports[i].port_id, val);
             }
             return;

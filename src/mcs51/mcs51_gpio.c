@@ -13,8 +13,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define IO_BRIDGE_GPIO 1
-
 /* Port read hook: combine output latch with external pin state.
  * On real 8051, reading a port pin reads the actual pin level.
  * pin = latch AND ext (when latch=1/weak pullup, ext can pull low). */
@@ -50,7 +48,7 @@ static void port_write(mcs51_cpu_t *cpu, uint8_t addr, uint8_t val, void *ctx)
     case SFR_P3: port_id = 3; break;
     default: return;
     }
-    cpu->bridge_cb(cpu->bridge_ctx, IO_BRIDGE_GPIO, port_id, val);
+    cpu->bridge_cb(cpu->bridge_ctx, IO_PERIPH_GPIO, port_id, val);
 }
 
 mcs51_gpio_t *mcs51_gpio_init(mcs51_cpu_t *cpu)

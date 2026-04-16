@@ -134,7 +134,14 @@
       "Bash(grep -E '^S:G\\\\$\\(toggle_count|timer0_isr|main\\)' examples/mcs51/timer_int/main.cdb)",
       "Bash(grep '^L:C\\\\$' examples/mcs51/timer_int/main.cdb)",
       "Bash(grep -n 'toggle_count\\\\|^S:G\\\\$main\\\\|^L:G\\\\$main' examples/mcs51/timer_int/main.cdb)",
-      "Bash(echo \"exit: $?\")"
+      "Bash(echo \"exit: $?\")",
+      "Bash(ls examples/avr/*.hex)",
+      "Bash(ls examples/*.hex)",
+      "Bash(idf.py build *)",
+      "Bash(ls ~/esp/*/export.sh)",
+      "Bash(timeout 15 cat /dev/ttyUSB1)",
+      "Bash(fuser /dev/ttyUSB1)",
+      "Bash(bash *)"
     ]
   }
 }

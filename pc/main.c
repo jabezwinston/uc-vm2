@@ -36,9 +36,6 @@ static void sigint_handler(int sig)
 
 /* ---------- I/O bridge callbacks ---------- */
 
-#define IO_BRIDGE_GPIO 1
-#define IO_BRIDGE_UART 2
-
 /* AVR GPIO port names */
 static const char *avr_port_names[] = { "B", "C", "D" };
 /* MCS51 GPIO port names */
@@ -51,7 +48,7 @@ static void pc_bridge_callback(void *ctx, uint8_t type, uint8_t resource, uint8_
 {
     (void)ctx;
     switch (type) {
-    case IO_BRIDGE_GPIO:
+    case IO_PERIPH_GPIO:
         if (resource < 8 && value != last_gpio[resource]) {
             if (g_arch == ARCH_AVR) {
                 const char *name = resource < 3 ? avr_port_names[resource] : "?";
@@ -66,7 +63,7 @@ static void pc_bridge_callback(void *ctx, uint8_t type, uint8_t resource, uint8_
             last_gpio[resource] = value;
         }
         break;
-    case IO_BRIDGE_UART:
+    case IO_PERIPH_UART:
         if (g_arch == ARCH_MCS51) {
             putchar(value);
             fflush(stdout);
@@ -158,7 +155,7 @@ static int run_avr(const char *variant_name, const char *hex_file,
     if (flash_words > MAX_FLASH_WORDS)
         flash_words = MAX_FLASH_WORDS;
 
-    if (ihex_load(hex_file, avr_flash, flash_words) != 0) {
+    if (fw_load(hex_file, avr_flash, flash_words) != 0) {
         fprintf(stderr, "Error: failed to load '%s'\n", hex_file);
         return 1;
     }
@@ -199,8 +196,6 @@ static int run_avr(const char *variant_name, const char *hex_file,
         }
         fprintf(stderr, "ucvm: GDB stub listening on port %d\n", gdb_port);
         fprintf(stderr, "ucvm: waiting for GDB connection...\n");
-        gdb_wait_connect(gdb);
-        fprintf(stderr, "ucvm: GDB connected\n");
     }
 
     /* Main emulation loop */
@@ -212,8 +207,10 @@ static int run_avr(const char *variant_name, const char *hex_file,
             gdb_poll(gdb);
             if (gdb_should_stop(gdb))
                 break;
-            if (!gdb_is_running(gdb))
-                goto avr_gdb_wait;
+            if (!gdb_is_running(gdb)) {
+                usleep(1000);
+                continue;
+            }
         }
 
         for (uint32_t i = 0; i < step_batch && running; i++) {
@@ -221,7 +218,7 @@ static int run_avr(const char *variant_name, const char *hex_file,
                 cpu->state == AVR_STATE_BREAK) {
                 if (gdb) {
                     gdb_notify_stop(gdb, cpu->state);
-                    goto avr_gdb_wait;
+                    break;
                 }
                 running = 0;
                 break;
@@ -239,14 +236,14 @@ static int run_avr(const char *variant_name, const char *hex_file,
 
             if (gdb && gdb_check_breakpoint(gdb, cpu->pc)) {
                 gdb_notify_stop(gdb, AVR_STATE_BREAK);
-                goto avr_gdb_wait;
+                break;
             }
 
             avr_cpu_step(cpu);
 
             if (gdb && gdb_is_single_stepping(gdb)) {
                 gdb_notify_stop(gdb, AVR_STATE_RUNNING);
-                goto avr_gdb_wait;
+                break;
             }
         }
 
@@ -262,14 +259,6 @@ static int run_avr(const char *variant_name, const char *hex_file,
                 putchar(c);
                 fflush(stdout);
             }
-        }
-        continue;
-
-    avr_gdb_wait:
-        while (running && gdb && !gdb_is_running(gdb)) {
-            gdb_poll(gdb);
-            if (gdb_should_stop(gdb)) { running = 0; break; }
-            usleep(1000);
         }
     }
 
@@ -312,7 +301,7 @@ static int run_mcs51(const char *variant_name, const char *hex_file,
 
     /* Load firmware */
     memset(cpu->code, 0xFF, cpu->code_size);
-    if (ihex_load_bytes(hex_file, cpu->code, cpu->code_size) != 0) {
+    if (fw_load_bytes(hex_file, cpu->code, cpu->code_size) != 0) {
         fprintf(stderr, "Error: failed to load '%s'\n", hex_file);
         mcs51_cpu_free(cpu);
         return 1;
@@ -331,12 +320,8 @@ static int run_mcs51(const char *variant_name, const char *hex_file,
     gdb_state_t *gdb = NULL;
     if (gdb_port > 0) {
         gdb = gdb_init(cpu, &gdb_target_mcs51, gdb_port);
-        if (gdb) {
+        if (gdb)
             fprintf(stderr, "ucvm: GDB stub listening on port %d\n", gdb_port);
-            fprintf(stderr, "ucvm: waiting for GDB connection...\n");
-            gdb_wait_connect(gdb);
-            fprintf(stderr, "ucvm: GDB connected\n");
-        }
     }
 
     /* Main emulation loop */
@@ -348,8 +333,10 @@ static int run_mcs51(const char *variant_name, const char *hex_file,
             gdb_poll(gdb);
             if (gdb_should_stop(gdb))
                 break;
-            if (!gdb_is_running(gdb))
-                goto mcs51_gdb_wait;
+            if (!gdb_is_running(gdb)) {
+                usleep(1000);
+                continue;
+            }
         }
 
         for (uint32_t i = 0; i < step_batch && running; i++) {
@@ -366,23 +353,15 @@ static int run_mcs51(const char *variant_name, const char *hex_file,
 
             if (gdb && gdb_check_breakpoint(gdb, cpu->pc)) {
                 gdb_notify_stop(gdb, MCS51_STATE_BREAK);
-                goto mcs51_gdb_wait;
+                break;
             }
 
             mcs51_cpu_step(cpu);
 
             if (gdb && gdb_is_single_stepping(gdb)) {
                 gdb_notify_stop(gdb, MCS51_STATE_RUNNING);
-                goto mcs51_gdb_wait;
+                break;
             }
-        }
-        continue;
-
-    mcs51_gdb_wait:
-        while (running && gdb && !gdb_is_running(gdb)) {
-            gdb_poll(gdb);
-            if (gdb_should_stop(gdb)) { running = 0; break; }
-            usleep(1000);
         }
     }
 

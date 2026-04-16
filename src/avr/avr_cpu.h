@@ -7,6 +7,15 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include "../io/io_bridge.h"
+
+/* Place hot emulation code in IRAM on ESP32 to avoid flash cache misses */
+#ifdef ESP_PLATFORM
+#include "esp_attr.h"
+#define AVR_HOT  IRAM_ATTR
+#else
+#define AVR_HOT
+#endif
 
 /* Forward declaration */
 typedef struct avr_cpu avr_cpu_t;
@@ -61,11 +70,6 @@ typedef void (*io_write_fn)(avr_cpu_t *cpu, uint8_t io_addr, uint8_t val, void *
 /* Max I/O address space (64 standard + 160 extended for 328P) */
 #define AVR_IO_MAX 224
 
-/* ---------- I/O bridge callback ---------- */
-
-/* Called when an AVR peripheral wants to signal the external world */
-typedef void (*io_bridge_cb_t)(void *ctx, uint8_t type, uint8_t resource, uint8_t value);
-
 /* ---------- AVR CPU state ---------- */
 
 struct avr_cpu {
@@ -76,6 +80,7 @@ struct avr_cpu {
     uint64_t cycles;         /* Total cycles executed */
     volatile uint8_t state;  /* AVR_STATE_* — volatile for cross-core access */
     uint8_t  skip_next;      /* 1 = skip next instruction (CPSE/SBRC/SBRS/SBIC/SBIS) */
+    uint16_t periph_accum;   /* cycles since last peripheral tick (for batching) */
 
     /* Program memory (word-addressed, not copied to RAM on ESP32) */
     const uint16_t *flash;

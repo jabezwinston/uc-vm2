@@ -5,199 +5,182 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>ucvm</title>
   <style>
-    * { box-sizing: border-box; margin: 0; padding: 0 }
-    body { font-family: monospace; background: #1a1a2e; color: #e0e0e0; padding: 20px }
-    h1 { color: #0ff; margin-bottom: 20px; font-size: 24px }
-    h2 { color: #0af; margin: 15px 0 10px; font-size: 16px }
-    .card {
-      background: #16213e; border: 1px solid #0a3d62;
-      border-radius: 8px; padding: 15px; margin-bottom: 15px;
-    }
-    .status { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px }
-    .stat { background: #0a3d62; padding: 10px; border-radius: 4px }
-    .stat label { color: #888; font-size: 12px; display: block }
-    .stat span { color: #0ff; font-size: 18px; font-weight: bold }
-    table { width: 100%; border-collapse: collapse; margin-top: 10px }
-    th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid #0a3d62 }
-    th { color: #0af; font-size: 12px }
-    button {
-      background: #0a3d62; color: #0ff; border: 1px solid #0ff;
-      padding: 8px 16px; border-radius: 4px; cursor: pointer;
-      font-family: monospace; margin: 5px;
-    }
-    button:hover { background: #0ff; color: #1a1a2e }
-    .btn-danger { border-color: #f44; color: #f44 }
-    .btn-danger:hover { background: #f44; color: #fff }
-    input, select {
-      background: #0a3d62; color: #e0e0e0; border: 1px solid #333;
-      padding: 6px; border-radius: 4px; font-family: monospace;
-    }
-    #log {
-      background: #000; color: #0f0; padding: 10px; border-radius: 4px;
-      height: 150px; overflow-y: auto; font-size: 12px; white-space: pre;
-    }
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{font-family:monospace;background:#1a1a2e;color:#e0e0e0;padding:16px}
+    h1{color:#0ff;margin-bottom:16px;font-size:22px}
+    h2{color:#0af;margin:12px 0 8px;font-size:15px}
+    .card{background:#16213e;border:1px solid #0a3d62;border-radius:8px;padding:14px;margin-bottom:14px}
+    .row{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:8px}
+    .stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px}
+    .stat{background:#0a3d62;padding:8px;border-radius:4px}
+    .stat label{color:#888;font-size:11px;display:block}
+    .stat span{color:#0ff;font-size:16px;font-weight:bold}
+    table{width:100%;border-collapse:collapse;margin-top:8px;font-size:13px}
+    th,td{text-align:left;padding:5px 8px;border-bottom:1px solid #0a3d62}
+    th{color:#0af;font-size:11px;text-transform:uppercase}
+    button{background:#0a3d62;color:#0ff;border:1px solid #0ff;padding:5px 10px;
+      border-radius:4px;cursor:pointer;font-family:monospace;font-size:12px}
+    button:hover{background:#0ff;color:#1a1a2e}
+    .btn-sm{padding:3px 7px;font-size:11px}
+    .btn-grn{border-color:#0f0;color:#0f0}.btn-grn:hover{background:#0f0;color:#1a1a2e}
+    .btn-red{border-color:#f44;color:#f44}.btn-red:hover{background:#f44;color:#fff}
+    select,input{background:#0a3d62;color:#e0e0e0;border:1px solid #333;
+      padding:5px;border-radius:4px;font-family:monospace;font-size:12px}
+    input[type=number]{width:60px}
+    #log{background:#000;color:#0f0;padding:8px;border-radius:4px;
+      height:100px;overflow-y:auto;font-size:11px;white-space:pre}
   </style>
 </head>
 <body>
-  <h1>ucvm - Microcontroller VM</h1>
+  <h1>ucvm</h1>
 
+  <!-- Status -->
   <div class="card">
-    <h2>Status</h2>
-    <div class="status" id="status">
-      <div class="stat"><label>State</label><span id="st-state">--</span></div>
-      <div class="stat"><label>Variant</label><span id="st-variant">--</span></div>
-      <div class="stat"><label>Cycles</label><span id="st-cycles">--</span></div>
-      <div class="stat"><label>PC</label><span id="st-pc">--</span></div>
+    <h2>CPU Status</h2>
+    <div class="stat-grid">
+      <div class="stat"><label>Architecture</label><span id="s-arch">--</span></div>
+      <div class="stat"><label>Variant</label><span id="s-var">--</span></div>
+      <div class="stat"><label>State</label><span id="s-st">--</span></div>
+      <div class="stat"><label>PC</label><span id="s-pc">--</span></div>
+      <div class="stat"><label>Cycles</label><span id="s-cyc">--</span></div>
+      <div class="stat"><label>Entries</label><span id="s-ent">--</span></div>
+    </div>
+    <div class="row">
+      <button onclick="doReset()">Reset</button>
+      <button class="btn-red" onclick="doHalt()">Halt</button>
     </div>
   </div>
 
+  <!-- Bridge Entries -->
   <div class="card">
-    <h2>Control</h2>
-    <button onclick="doReset()">Reset CPU</button>
-    <button class="btn-danger" onclick="doHalt()">Halt</button>
-  </div>
-
-  <div class="card">
-    <h2>I/O Bridge Configuration</h2>
+    <h2>I/O Bridge</h2>
     <table>
-      <thead><tr><th>Type</th><th>AVR Resource</th><th>ESP32 Resource</th><th>Flags</th><th></th></tr></thead>
-      <tbody id="bridge-table"></tbody>
+      <thead><tr>
+        <th>#</th><th>MCU Periph</th><th>Index</th><th>Pin</th>
+        <th>Host Type</th><th>Host #</th><th>Param</th><th>Flags</th><th></th>
+      </tr></thead>
+      <tbody id="tbl"></tbody>
     </table>
-    <div style="margin-top:10px">
-      <select id="new-type">
-        <option value="1">GPIO</option>
-        <option value="2">UART</option>
-        <option value="3">ADC</option>
-      </select>
-      <input id="new-avr" placeholder="AVR res (hex)" size="8">
-      <input id="new-host" placeholder="ESP32 pin" size="8">
-      <input id="new-flags" placeholder="Flags" size="6" value="0">
-      <button onclick="addEntry()">Add</button>
+    <div class="row" style="margin-top:10px">
+      <button onclick="saveConfig()">Save to NVS</button>
     </div>
-    <button onclick="saveConfig()" style="margin-top:10px">Save to NVS</button>
   </div>
 
+  <!-- Add Entry -->
+  <div class="card">
+    <h2>Add Entry</h2>
+    <div class="row">
+      <label>MCU</label>
+      <select id="a-mp">
+        <option value="0">GPIO</option><option value="1">UART</option>
+        <option value="2">SPI</option><option value="3">I2C</option>
+        <option value="4">ADC</option><option value="5">PWM</option>
+      </select>
+      <input id="a-mi" type="number" placeholder="idx" value="0" title="MCU index (port/channel)">
+      <input id="a-pin" type="number" placeholder="pin" value="0" title="Pin (GPIO only)">
+    </div>
+    <div class="row">
+      <label>Host</label>
+      <select id="a-ht">
+        <option value="0">GPIO</option><option value="1">UART</option>
+        <option value="2">I2C</option><option value="3">ADC</option>
+      </select>
+      <input id="a-hi" type="number" placeholder="idx" value="0" title="Host index (pin/port)">
+      <input id="a-par" type="number" placeholder="param" value="0" title="Baud/100, speed/100, or 0">
+      <input id="a-fl" type="number" placeholder="flags" value="0" title="Flags (1=invert, 2=pullup)">
+      <button class="btn-grn" onclick="addEntry()">Add</button>
+    </div>
+  </div>
+
+  <!-- Firmware -->
   <div class="card">
     <h2>Firmware Upload</h2>
-    <input type="file" id="hexfile" accept=".hex">
-    <button onclick="uploadFirmware()">Upload &amp; Flash</button>
+    <div class="row">
+      <input type="file" id="hexfile" accept=".hex,.ihx">
+      <button onclick="uploadFW()">Upload</button>
+    </div>
   </div>
 
+  <!-- Log -->
   <div class="card">
     <h2>Log</h2>
     <div id="log"></div>
   </div>
 
-  <script>
-    const TYPES = {1:'GPIO', 2:'UART', 3:'ADC', 4:'SPI', 5:'I2C', 6:'PWM'};
+<script>
+function $(id){return document.getElementById(id)}
+function log(m){const l=$('log');l.textContent+=m+'\n';l.scrollTop=l.scrollHeight}
+async function api(url,body){
+  const o=body?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:{};
+  return (await fetch(url,o)).json();
+}
 
-    function log(m) {
-      const l = document.getElementById('log');
-      l.textContent += m + '\n';
-      l.scrollTop = l.scrollHeight;
-    }
+async function fetchStatus(){
+  try{
+    const d=await api('/api/status');
+    $('s-arch').textContent=d.arch||'--';
+    $('s-var').textContent=d.variant||'--';
+    $('s-st').textContent=d.state||'--';
+    $('s-pc').textContent='0x'+((d.pc||0).toString(16)).toUpperCase();
+    $('s-cyc').textContent=(d.cycles||0).toLocaleString();
+    $('s-ent').textContent=d.entries||0;
+  }catch(e){}
+}
 
-    async function fetchStatus() {
-      try {
-        const r = await fetch('/api/status');
-        const d = await r.json();
-        document.getElementById('st-state').textContent = d.state;
-        document.getElementById('st-variant').textContent = d.variant;
-        document.getElementById('st-cycles').textContent = d.cycles;
-        document.getElementById('st-pc').textContent = '0x' + d.pc.toString(16);
-      } catch(e) {}
-    }
+async function fetchEntries(){
+  try{
+    const d=await api('/api/bridge');
+    const tb=$('tbl');tb.innerHTML='';
+    (d.entries||[]).forEach(e=>{
+      const tr=document.createElement('tr');
+      tr.innerHTML=
+        `<td>${e.i}</td><td>${e.mp}</td><td>${e.mi}</td><td>${e.pin}</td>`+
+        `<td>${e.ht}</td><td>${e.hi}</td><td>${e.param}</td><td>${e.flags}</td>`+
+        `<td><button class="btn-sm btn-red" onclick="delEntry(${e.i})">del</button></td>`;
+      tb.appendChild(tr);
+    });
+  }catch(e){log('Error: '+e)}
+}
 
-    async function fetchConfig() {
-      try {
-        const r = await fetch('/api/config');
-        const d = await r.json();
-        const tb = document.getElementById('bridge-table');
-        tb.innerHTML = '';
-        d.entries.forEach((e, i) => {
-          const tr = document.createElement('tr');
-          tr.innerHTML =
-            `<td>${TYPES[e.type] || e.type}</td>` +
-            `<td>0x${e.avr.toString(16).padStart(2,'0')}</td>` +
-            `<td>${e.host}</td>` +
-            `<td>0x${e.flags.toString(16)}</td>` +
-            `<td><button onclick='delEntry(${i})'>X</button></td>`;
-          tb.appendChild(tr);
-        });
-      } catch(e) { log('Config fetch error: ' + e); }
-    }
+async function addEntry(){
+  const d=await api('/api/bridge',{
+    action:'add',
+    mp:+$('a-mp').value, mi:+$('a-mi').value, pin:+$('a-pin').value,
+    ht:+$('a-ht').value, hi:+$('a-hi').value,
+    param:+$('a-par').value, flags:+$('a-fl').value,
+  });
+  log(d.msg||'Added');fetchEntries();
+}
 
-    async function addEntry() {
-      const t = parseInt(document.getElementById('new-type').value);
-      const a = parseInt(document.getElementById('new-avr').value, 16) || 0;
-      const h = parseInt(document.getElementById('new-host').value) || 0;
-      const f = parseInt(document.getElementById('new-flags').value) || 0;
-      const r = await fetch('/api/config', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({action:'add', type:t, avr:a, host:h, flags:f})
-      });
-      const d = await r.json();
-      log(d.msg || 'Added');
-      fetchConfig();
-    }
+async function delEntry(i){
+  const d=await api('/api/bridge',{action:'del',index:i});
+  log(d.msg||'Deleted');fetchEntries();
+}
 
-    async function delEntry(i) {
-      const r = await fetch('/api/config', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({action:'del', index:i})
-      });
-      const d = await r.json();
-      log(d.msg || 'Deleted');
-      fetchConfig();
-    }
+async function saveConfig(){
+  const d=await api('/api/bridge',{action:'save'});
+  log(d.msg||'Saved');
+}
 
-    async function saveConfig() {
-      const r = await fetch('/api/config', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({action:'save'})
-      });
-      const d = await r.json();
-      log(d.msg || 'Saved');
-    }
+async function doReset(){
+  const d=await api('/api/reset',{});log(d.msg||'Reset');fetchStatus();
+}
+async function doHalt(){
+  const d=await api('/api/reset',{action:'halt'});log(d.msg||'Halted');fetchStatus();
+}
 
-    async function doReset() {
-      const r = await fetch('/api/reset', {method: 'POST'});
-      const d = await r.json();
-      log(d.msg || 'Reset');
-      fetchStatus();
-    }
+async function uploadFW(){
+  const f=$('hexfile').files[0];
+  if(!f){log('No file selected');return}
+  log('Uploading '+f.name+'...');
+  const r=await fetch('/api/firmware',{method:'POST',body:await f.text(),
+    headers:{'Content-Type':'text/plain'}});
+  const d=await r.json();
+  log(d.msg||'Done');fetchStatus();
+}
 
-    async function doHalt() {
-      const r = await fetch('/api/reset', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({action:'halt'})
-      });
-      const d = await r.json();
-      log(d.msg || 'Halted');
-      fetchStatus();
-    }
-
-    async function uploadFirmware() {
-      const f = document.getElementById('hexfile').files[0];
-      if (!f) { log('No file selected'); return; }
-      log('Uploading ' + f.name + '...');
-      const r = await fetch('/api/firmware', {
-        method: 'POST',
-        body: await f.text(),
-        headers: {'Content-Type': 'text/plain'}
-      });
-      const d = await r.json();
-      log(d.msg || 'Done');
-      fetchStatus();
-    }
-
-    setInterval(fetchStatus, 2000);
-    fetchStatus();
-    fetchConfig();
-  </script>
+fetchStatus();fetchEntries();
+setInterval(()=>{fetchStatus();fetchEntries()},3000);
+</script>
 </body>
 </html>

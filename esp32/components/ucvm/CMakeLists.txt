@@ -15,6 +15,7 @@ if(CONFIG_UCVM_ENABLE_AVR)
         "${UCVM_SRC_DIR}/avr/avr_gpio.c"
         "${UCVM_SRC_DIR}/avr/avr_uart.c"
         "${UCVM_SRC_DIR}/avr/avr_twi.c"
+        "${UCVM_SRC_DIR}/avr/avr_mcu_ops.c"
         "${UCVM_SRC_DIR}/avr/atmega328p.c"
         "${UCVM_SRC_DIR}/avr/attiny85.c"
         "${UCVM_SRC_DIR}/gdb/gdb_target_avr.c"
@@ -29,6 +30,7 @@ if(CONFIG_UCVM_ENABLE_MCS51)
         "${UCVM_SRC_DIR}/mcs51/mcs51_timer.c"
         "${UCVM_SRC_DIR}/mcs51/mcs51_uart.c"
         "${UCVM_SRC_DIR}/mcs51/mcs51_gpio.c"
+        "${UCVM_SRC_DIR}/mcs51/mcs51_mcu_ops.c"
         "${UCVM_SRC_DIR}/mcs51/at89s52.c"
         "${UCVM_SRC_DIR}/gdb/gdb_target_mcs51.c"
     )

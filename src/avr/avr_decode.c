@@ -13,74 +13,88 @@
 extern void avr_push(avr_cpu_t *cpu, uint8_t val);
 extern uint8_t avr_pop(avr_cpu_t *cpu);
 
-/* ---------- SREG flag helpers ---------- */
+/* ---------- SREG flag helpers ----------
+ *
+ * Compute all affected flags in one shot using bitmask arithmetic.
+ * Avoids per-flag branches — each helper is a single bulk assignment. */
 
 static inline void set_flag(avr_cpu_t *cpu, uint8_t flag, uint8_t val)
 {
-    if (val)
-        cpu->sreg |= flag;
-    else
-        cpu->sreg &= ~flag;
+    if (val) cpu->sreg |= flag;
+    else     cpu->sreg &= ~flag;
 }
 
-/* Update flags for ADD/ADC: C, Z, N, V, S, H */
+/* ADD/ADC: H, V, N, Z, C, S */
 static inline void flags_add(avr_cpu_t *cpu, uint8_t Rd, uint8_t Rr, uint8_t R)
 {
-    uint8_t Rd3 = (Rd >> 3) & 1, Rr3 = (Rr >> 3) & 1, R3 = (R >> 3) & 1;
-    uint8_t Rd7 = (Rd >> 7) & 1, Rr7 = (Rr >> 7) & 1, R7 = (R >> 7) & 1;
-
-    set_flag(cpu, SREG_H, (Rd3 & Rr3) | (Rr3 & (~R3 & 1)) | ((~R3 & 1) & Rd3));
-    set_flag(cpu, SREG_V, (Rd7 & Rr7 & (~R7 & 1)) | ((~Rd7 & 1) & (~Rr7 & 1) & R7));
-    set_flag(cpu, SREG_N, R7);
-    set_flag(cpu, SREG_Z, R == 0);
-    set_flag(cpu, SREG_C, (Rd7 & Rr7) | (Rr7 & (~R7 & 1)) | ((~R7 & 1) & Rd7));
-    set_flag(cpu, SREG_S, ((cpu->sreg >> 2) ^ (cpu->sreg >> 3)) & 1); /* N xor V */
+    uint8_t carry3 = (Rd & Rr) | (Rr & ~R) | (~R & Rd);  /* per-bit carry */
+    uint8_t carry7 = carry3;                               /* same expr, diff bits */
+    uint8_t N = (R >> 7) & 1;
+    uint8_t V = (((Rd ^ R) & (Rr ^ R)) >> 7) & 1;
+    uint8_t s = (cpu->sreg & (SREG_T | SREG_I))  /* preserve T, I */
+        | ((carry3 & 0x08) ? SREG_H : 0)
+        | (V ? SREG_V : 0)
+        | (N ? SREG_N : 0)
+        | (R == 0 ? SREG_Z : 0)
+        | ((carry7 & 0x80) ? SREG_C : 0)
+        | ((N ^ V) ? SREG_S : 0);
+    cpu->sreg = s;
 }
 
-/* Update flags for SUB/SBC/CP/CPC/NEG: C, Z, N, V, S, H */
+/* SUB/SBC/CP/CPC/NEG: H, V, N, Z, C, S */
 static inline void flags_sub(avr_cpu_t *cpu, uint8_t Rd, uint8_t Rr, uint8_t R, int keep_z)
 {
-    uint8_t Rd3 = (Rd >> 3) & 1, Rr3 = (Rr >> 3) & 1, R3 = (R >> 3) & 1;
-    uint8_t Rd7 = (Rd >> 7) & 1, Rr7 = (Rr >> 7) & 1, R7 = (R >> 7) & 1;
-
-    set_flag(cpu, SREG_H, ((~Rd3 & 1) & Rr3) | (Rr3 & R3) | (R3 & (~Rd3 & 1)));
-    set_flag(cpu, SREG_V, (Rd7 & (~Rr7 & 1) & (~R7 & 1)) | ((~Rd7 & 1) & Rr7 & R7));
-    set_flag(cpu, SREG_N, R7);
-    if (keep_z) {
-        /* SBC/CPC: only clear Z, never set it */
-        if (R != 0) cpu->sreg &= ~SREG_Z;
-    } else {
-        set_flag(cpu, SREG_Z, R == 0);
-    }
-    set_flag(cpu, SREG_C, ((~Rd7 & 1) & Rr7) | (Rr7 & R7) | (R7 & (~Rd7 & 1)));
-    set_flag(cpu, SREG_S, ((cpu->sreg >> 2) ^ (cpu->sreg >> 3)) & 1);
+    uint8_t borrow3 = (~Rd & Rr) | (Rr & R) | (R & ~Rd);
+    uint8_t N = (R >> 7) & 1;
+    uint8_t V = (((Rd ^ Rr) & (Rd ^ R)) >> 7) & 1;
+    uint8_t Z;
+    if (keep_z)
+        Z = (cpu->sreg & SREG_Z) && (R == 0);  /* SBC/CPC: only clear, never set */
+    else
+        Z = (R == 0);
+    uint8_t borrow7 = (~Rd & Rr) | (Rr & R) | (R & ~Rd);
+    uint8_t s = (cpu->sreg & (SREG_T | SREG_I))
+        | ((borrow3 & 0x08) ? SREG_H : 0)
+        | (V ? SREG_V : 0)
+        | (N ? SREG_N : 0)
+        | (Z ? SREG_Z : 0)
+        | ((borrow7 & 0x80) ? SREG_C : 0)
+        | ((N ^ V) ? SREG_S : 0);
+    cpu->sreg = s;
 }
 
-/* Update flags for AND/ANDI/OR/ORI/EOR/COM: Z, N, V=0, S */
+/* AND/OR/EOR/COM: V=0, N, Z, S */
 static inline void flags_logic(avr_cpu_t *cpu, uint8_t R)
 {
-    set_flag(cpu, SREG_V, 0);
-    set_flag(cpu, SREG_N, (R >> 7) & 1);
-    set_flag(cpu, SREG_Z, R == 0);
-    set_flag(cpu, SREG_S, (R >> 7) & 1); /* S = N xor V = N since V=0 */
+    uint8_t N = (R >> 7) & 1;
+    cpu->sreg = (cpu->sreg & (SREG_T | SREG_I | SREG_H | SREG_C))
+        | (N ? SREG_N : 0)
+        | (R == 0 ? SREG_Z : 0)
+        | (N ? SREG_S : 0);  /* S = N ^ V = N (V=0) */
 }
 
-/* Update flags for INC: Z, N, V, S (no C affected) */
+/* INC: V, N, Z, S (C untouched) */
 static inline void flags_inc(avr_cpu_t *cpu, uint8_t R)
 {
-    set_flag(cpu, SREG_V, R == 0x80);
-    set_flag(cpu, SREG_N, (R >> 7) & 1);
-    set_flag(cpu, SREG_Z, R == 0);
-    set_flag(cpu, SREG_S, ((cpu->sreg >> 2) ^ (cpu->sreg >> 3)) & 1);
+    uint8_t N = (R >> 7) & 1;
+    uint8_t V = (R == 0x80);
+    cpu->sreg = (cpu->sreg & (SREG_T | SREG_I | SREG_H | SREG_C))
+        | (V ? SREG_V : 0)
+        | (N ? SREG_N : 0)
+        | (R == 0 ? SREG_Z : 0)
+        | ((N ^ V) ? SREG_S : 0);
 }
 
-/* Update flags for DEC: Z, N, V, S (no C affected) */
+/* DEC: V, N, Z, S (C untouched) */
 static inline void flags_dec(avr_cpu_t *cpu, uint8_t R)
 {
-    set_flag(cpu, SREG_V, R == 0x7F);
-    set_flag(cpu, SREG_N, (R >> 7) & 1);
-    set_flag(cpu, SREG_Z, R == 0);
-    set_flag(cpu, SREG_S, ((cpu->sreg >> 2) ^ (cpu->sreg >> 3)) & 1);
+    uint8_t N = (R >> 7) & 1;
+    uint8_t V = (R == 0x7F);
+    cpu->sreg = (cpu->sreg & (SREG_T | SREG_I | SREG_H | SREG_C))
+        | (V ? SREG_V : 0)
+        | (N ? SREG_N : 0)
+        | (R == 0 ? SREG_Z : 0)
+        | ((N ^ V) ? SREG_S : 0);
 }
 
 /* ---------- Operand extraction macros ---------- */
@@ -114,11 +128,10 @@ static inline void flags_dec(avr_cpu_t *cpu, uint8_t R)
 
 /* ---------- Main decode/execute function ---------- */
 
-uint8_t avr_decode_execute(avr_cpu_t *cpu)
+AVR_HOT uint8_t avr_decode_execute(avr_cpu_t *cpu)
 {
     uint16_t pc = cpu->pc;
     if (pc >= cpu->flash_size / 2) {
-        fprintf(stderr, "FAULT: PC=0x%04X out of flash bounds\n", pc);
         cpu->state = AVR_STATE_HALTED;
         return 1;
     }

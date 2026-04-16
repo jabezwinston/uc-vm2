@@ -10,9 +10,6 @@
 #include "avr_cpu.h"
 #include <stdlib.h>
 
-/* I/O bridge types */
-#define IO_BRIDGE_UART 2
-
 /* UCSR0A bits */
 #define UCSR_RXC   0x80  /* Receive Complete */
 #define UCSR_TXC   0x40  /* Transmit Complete */
@@ -114,7 +111,7 @@ static void udr_write(avr_cpu_t *cpu, uint8_t io_addr, uint8_t val, void *ctx)
 
     /* Trigger bridge callback */
     if (cpu->bridge_cb)
-        cpu->bridge_cb(cpu->bridge_ctx, IO_BRIDGE_UART, 0, val);
+        cpu->bridge_cb(cpu->bridge_ctx, IO_PERIPH_UART, 0, val);
 
     uart_update_status(cpu, uart);
 }

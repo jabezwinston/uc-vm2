@@ -16,6 +16,7 @@
 #include <arpa/inet.h>
 #include <fcntl.h>
 #include <errno.h>
+#include <sys/select.h>
 
 #define GDB_BUF_SIZE 1024
 
@@ -308,28 +309,20 @@ gdb_state_t *gdb_init(void *cpu, const gdb_target_ops_t *ops, int port)
 
 /* Legacy AVR init — implemented in gdb_target_avr.c */
 
-void gdb_wait_connect(gdb_state_t *gdb)
-{
-    int flags = fcntl(gdb->listen_fd, F_GETFL, 0);
-    fcntl(gdb->listen_fd, F_SETFL, flags & ~O_NONBLOCK);
-
-    struct sockaddr_in client_addr;
-    socklen_t client_len = sizeof(client_addr);
-    gdb->client_fd = accept(gdb->listen_fd,
-                             (struct sockaddr *)&client_addr, &client_len);
-
-    fcntl(gdb->listen_fd, F_SETFL, flags | O_NONBLOCK);
-
-    if (gdb->client_fd >= 0) {
-        int cflags = fcntl(gdb->client_fd, F_GETFL, 0);
-        fcntl(gdb->client_fd, F_SETFL, cflags | O_NONBLOCK);
-    }
-}
+int gdb_has_client(gdb_state_t *gdb) { return gdb->client_fd >= 0; }
 
 void gdb_poll(gdb_state_t *gdb)
 {
-    /* Auto-accept if no client */
+    /* Auto-accept if no client — use select() to avoid blocking
+     * (lwip's O_NONBLOCK on accept is unreliable on some ESP-IDF versions) */
     if (gdb->client_fd < 0 && gdb->listen_fd >= 0) {
+        fd_set rfds;
+        struct timeval tv = {0, 0};  /* zero timeout = non-blocking poll */
+        FD_ZERO(&rfds);
+        FD_SET(gdb->listen_fd, &rfds);
+        if (select(gdb->listen_fd + 1, &rfds, NULL, NULL, &tv) <= 0)
+            return;  /* no pending connection */
+
         struct sockaddr_in client_addr;
         socklen_t client_len = sizeof(client_addr);
         int fd = accept(gdb->listen_fd,
