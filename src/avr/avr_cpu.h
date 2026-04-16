@@ -71,6 +71,9 @@ enum avr_op {
     AVR_OP_LPM_R0, AVR_OP_LPM_RD, AVR_OP_LPM_RDP,
     /* Fused instruction pairs (detected at predecode) */
     AVR_OP_SUBI_BRNE, AVR_OP_DEC_BRNE,
+    /* Fused delay loops: SUBI + N×SBCI(K=0) + BRNE back to SUBI */
+    AVR_OP_DELAY2,  /* 2-byte counter: SUBI + SBCI + BRNE */
+    AVR_OP_DELAY3,  /* 3-byte counter: SUBI + SBCI + SBCI + BRNE */
     /* Misc */
     AVR_OP_NOP, AVR_OP_SLEEP, AVR_OP_WDR, AVR_OP_BREAK, AVR_OP_SPM,
     /* Invalid / 2nd word of 32-bit instruction */

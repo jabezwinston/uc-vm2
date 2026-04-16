@@ -135,10 +135,8 @@ void avr_predecode(avr_cpu_t *cpu)
 
     if (!cache) return;
 
-    /* Halt CPU first — avr_cpu_run checks state at periph tick
-     * boundaries, so it will exit within ~64 cycles. Caller
-     * (avr_cpu_reset) sets state back to RUNNING after we return. */
-    cpu->state = AVR_STATE_HALTED;
+    /* Note: caller must ensure emu_task is stopped before calling.
+     * avr_cpu_reset() handles this via halt + delay. */
 
     for (uint32_t i = 0; i < num_words; i++) {
         uint16_t op = flash[i];
@@ -455,10 +453,35 @@ void avr_predecode(avr_cpu_t *cpu)
         }
     }
 
-    /* ---- Fusion pass: detect instruction pairs and merge ---- */
+    /* ---- Fusion pass: detect patterns and merge ---- */
+
+    /* Pass 1: Delay loops — SUBI + N×SBCI(K=0) + BRNE back to SUBI.
+     * Must run before the pair-fusion pass so SUBI isn't already fused. */
+    for (uint32_t i = 0; i + 3 < num_words; i++) {
+        if (cache[i].op != AVR_OP_SUBI) continue;
+
+        /* 3-byte counter: SUBI + SBCI + SBCI + BRNE → DELAY3 */
+        if (i + 3 < num_words &&
+            cache[i+1].op == AVR_OP_SBCI && (uint8_t)cache[i+1].b == 0 &&
+            cache[i+2].op == AVR_OP_SBCI && (uint8_t)cache[i+2].b == 0 &&
+            cache[i+3].op == AVR_OP_BRBC && cache[i+3].a == SREG_Z &&
+            cache[i+3].b == i) {
+            cache[i].op = AVR_OP_DELAY3;
+            continue;
+        }
+        /* 2-byte counter: SUBI + SBCI + BRNE → DELAY2 */
+        if (i + 2 < num_words &&
+            cache[i+1].op == AVR_OP_SBCI && (uint8_t)cache[i+1].b == 0 &&
+            cache[i+2].op == AVR_OP_BRBC && cache[i+2].a == SREG_Z &&
+            cache[i+2].b == i) {
+            cache[i].op = AVR_OP_DELAY2;
+            continue;
+        }
+    }
+
+    /* Pass 2: Simple pairs — SUBI+BRNE, DEC+BRNE */
     for (uint32_t i = 0; i + 1 < num_words; i++) {
         uint8_t next_op = cache[i + 1].op;
-        /* BRNE = BRBC with bit mask == SREG_Z (0x02) */
         if (next_op == AVR_OP_BRBC && cache[i + 1].a == SREG_Z) {
             if (cache[i].op == AVR_OP_SUBI)
                 cache[i].op = AVR_OP_SUBI_BRNE;
@@ -620,6 +643,8 @@ AVR_HOT uint32_t avr_cpu_run(avr_cpu_t *cpu, int max_steps)
         [AVR_OP_SPM]   = &&AVR_OP_SPM,
         [AVR_OP_SUBI_BRNE] = &&AVR_OP_SUBI_BRNE,
         [AVR_OP_DEC_BRNE]  = &&AVR_OP_DEC_BRNE,
+        [AVR_OP_DELAY2]    = &&AVR_OP_DELAY2,
+        [AVR_OP_DELAY3]    = &&AVR_OP_DELAY3,
         [AVR_OP_FAULT] = &&AVR_OP_FAULT,  [AVR_OP_DATA]  = &&AVR_OP_NOP,
     };
     /* Initial dispatch */
@@ -1143,6 +1168,61 @@ AVR_HOT uint32_t avr_cpu_run(avr_cpu_t *cpu, int max_steps)
             NEXT(3);
         }
         pc += 2; NEXT(2);
+    }
+
+    H(AVR_OP_DELAY2) {
+        /* SUBI Rd,K + SBCI Rr,0 + BRNE — 2-byte counter loop.
+         * One dispatch replaces three. */
+        uint8_t r_lo = d->a, K = (uint8_t)d->b;
+        uint8_t r_hi = cache[pc + 1].a;
+
+        uint8_t lo = AVR_R(cpu, r_lo);
+        uint8_t R_lo = lo - K;
+        uint8_t C = (lo < K);
+
+        uint8_t hi = AVR_R(cpu, r_hi);
+        uint8_t R_hi = hi - C;
+
+        AVR_R(cpu, r_lo) = R_lo;
+        AVR_R(cpu, r_hi) = R_hi;
+
+        if (R_lo | R_hi) {   /* any byte non-zero → loop */
+            pc = cache[pc + 2].b;
+            NEXT(4);  /* SUBI(1) + SBCI(1) + BRNE taken(2) */
+        }
+        /* exit: set flags as if last SBCI produced 0 */
+        cpu->sreg = (cpu->sreg & (SREG_T | SREG_I)) | SREG_Z;
+        pc += 3; NEXT(3);
+    }
+
+    H(AVR_OP_DELAY3) {
+        /* SUBI Rd,K + SBCI Rm,0 + SBCI Rh,0 + BRNE — 3-byte counter.
+         * One dispatch replaces four.  This is the _delay_ms hot loop. */
+        uint8_t r_lo = d->a, K = (uint8_t)d->b;
+        uint8_t r_mid = cache[pc + 1].a;
+        uint8_t r_hi  = cache[pc + 2].a;
+
+        uint8_t lo = AVR_R(cpu, r_lo);
+        uint8_t R_lo = lo - K;
+        uint8_t C = (lo < K);
+
+        uint8_t mid = AVR_R(cpu, r_mid);
+        uint8_t R_mid = mid - C;
+        uint8_t C2 = (C & (mid == 0));
+
+        uint8_t hi = AVR_R(cpu, r_hi);
+        uint8_t R_hi = hi - C2;
+
+        AVR_R(cpu, r_lo) = R_lo;
+        AVR_R(cpu, r_mid) = R_mid;
+        AVR_R(cpu, r_hi) = R_hi;
+
+        if (R_lo | R_mid | R_hi) {  /* any byte non-zero → loop */
+            pc = cache[pc + 3].b;
+            NEXT(5);  /* SUBI(1) + SBCI(1) + SBCI(1) + BRNE taken(2) */
+        }
+        cpu->sreg = (cpu->sreg & (SREG_T | SREG_I)) | SREG_Z;
+        pc += 4; NEXT(4);
     }
 
     /* ---- Load ---- */

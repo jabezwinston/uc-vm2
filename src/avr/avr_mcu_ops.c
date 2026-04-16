@@ -36,6 +36,12 @@ static void avr_do_reset(void *cpu)
 static int avr_load_fw(void *cpu, const char *path)
 {
     avr_cpu_t *c = cpu;
+    /* Halt emu_task before touching flash — it may be reading it */
+    c->state = AVR_STATE_HALTED;
+#ifdef ESP_PLATFORM
+    extern void vTaskDelay(uint32_t);
+    vTaskDelay(2);
+#endif
     uint16_t *flash = (uint16_t *)c->flash;
     uint32_t words = c->flash_size / 2;
     memset(flash, 0xFF, words * 2);

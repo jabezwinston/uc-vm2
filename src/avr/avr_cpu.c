@@ -107,6 +107,14 @@ void avr_cpu_free(avr_cpu_t *cpu)
 
 void avr_cpu_reset(avr_cpu_t *cpu)
 {
+    /* On ESP32, halt and wait for the emu_task (running on another core)
+     * to exit avr_cpu_run before we modify flash/cache/data. */
+    cpu->state = AVR_STATE_HALTED;
+#ifdef ESP_PLATFORM
+    extern void vTaskDelay(uint32_t);
+    vTaskDelay(2);
+#endif
+
     cpu->pc    = 0;
     cpu->sreg  = 0;
     /* SP initializes to top of SRAM */
